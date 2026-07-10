@@ -1,5 +1,5 @@
 use std::env;
-use std::io::{Read, Write};
+use std::io::{ Read, Write };
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
@@ -18,8 +18,12 @@ fn recv_lines(stream: &mut TcpStream, timeout: Duration) -> Vec<String> {
         }
         stream.set_read_timeout(Some(Duration::from_millis(50))).ok();
         match stream.read(&mut buf) {
-            Ok(0) => break,
-            Err(_) => continue,
+            Ok(0) => {
+                break;
+            }
+            Err(_) => {
+                continue;
+            }
             Ok(n) => {
                 let s = String::from_utf8_lossy(&buf[..n]);
                 for line in s.lines() {
@@ -42,7 +46,9 @@ fn auth(stream: &mut TcpStream, username: &str, password: &str) {
     send(stream, username);
     thread::sleep(Duration::from_millis(300));
     let lines = recv_lines(stream, Duration::from_millis(1000));
-    for l in &lines { println!("  <- {l}"); }
+    for l in &lines {
+        println!("  <- {l}");
+    }
 
     if lines.iter().any(|l| l.contains("Register")) {
         send(stream, &format!("/register {password}"));
@@ -51,8 +57,13 @@ fn auth(stream: &mut TcpStream, username: &str, password: &str) {
     }
     thread::sleep(Duration::from_millis(300));
     let lines = recv_lines(stream, Duration::from_millis(1500));
-    for l in &lines { println!("  <- {l}"); }
-    assert!(lines.iter().any(|l| l.contains("Token:")), "Auth failed for {username}");
+    for l in &lines {
+        println!("  <- {l}");
+    }
+    assert!(
+        lines.iter().any(|l| l.contains("Token:")),
+        "Auth failed for {username}"
+    );
 }
 
 fn main() {
@@ -68,17 +79,25 @@ fn main() {
             auth(&mut s, "alice", "pass1_alice");
 
             send(&mut s, "/rooms");
-            for l in recv_lines(&mut s, Duration::from_millis(500)) { println!("  <- {l}"); }
+            for l in recv_lines(&mut s, Duration::from_millis(500)) {
+                println!("  <- {l}");
+            }
 
             send(&mut s, "/join games");
-            for l in recv_lines(&mut s, Duration::from_millis(500)) { println!("  <- {l}"); }
+            for l in recv_lines(&mut s, Duration::from_millis(500)) {
+                println!("  <- {l}");
+            }
 
             send(&mut s, "/rooms");
-            for l in recv_lines(&mut s, Duration::from_millis(500)) { println!("  <- {l}"); }
+            for l in recv_lines(&mut s, Duration::from_millis(500)) {
+                println!("  <- {l}");
+            }
 
             send(&mut s, "hello gamers!");
             loop {
-                for l in recv_lines(&mut s, Duration::from_secs(1)) { println!("  <- {l}"); }
+                for l in recv_lines(&mut s, Duration::from_secs(1)) {
+                    println!("  <- {l}");
+                }
             }
         }
         "bob" => {
@@ -87,18 +106,27 @@ fn main() {
             auth(&mut s, "bob", "pass2_bob");
 
             send(&mut s, "/rooms");
-            for l in recv_lines(&mut s, Duration::from_millis(500)) { println!("  <- {l}"); }
+            for l in recv_lines(&mut s, Duration::from_millis(500)) {
+                println!("  <- {l}");
+            }
 
             send(&mut s, "/join games");
-            for l in recv_lines(&mut s, Duration::from_millis(500)) { println!("  <- {l}"); }
+            for l in recv_lines(&mut s, Duration::from_millis(500)) {
+                println!("  <- {l}");
+            }
 
             send(&mut s, "hey alice!");
             loop {
-                for l in recv_lines(&mut s, Duration::from_secs(1)) { println!("  <- {l}"); }
+                for l in recv_lines(&mut s, Duration::from_secs(1)) {
+                    println!("  <- {l}");
+                }
             }
         }
         "setup" => {
-            for (user, pass) in &[("alice", "pass1_alice"), ("bob", "pass2_bob")] {
+            for (user, pass) in &[
+                ("alice", "pass1_alice"),
+                ("bob", "pass2_bob"),
+            ] {
                 let mut s = connect();
                 send(&mut s, user);
                 thread::sleep(Duration::from_millis(200));
@@ -110,7 +138,9 @@ fn main() {
                     send(&mut s, &format!("/login {pass}"));
                 }
                 let resp = recv_lines(&mut s, Duration::from_millis(500));
-                for l in resp { println!("{user}: {l}"); }
+                for l in resp {
+                    println!("{user}: {l}");
+                }
             }
             println!("Setup done.");
         }
@@ -120,20 +150,30 @@ fn main() {
             auth(&mut s, "charlie", "charlie_pass");
 
             send(&mut s, "/rooms");
-            for l in recv_lines(&mut s, Duration::from_millis(500)) { println!("  <- {l}"); }
+            for l in recv_lines(&mut s, Duration::from_millis(500)) {
+                println!("  <- {l}");
+            }
 
             send(&mut s, "/msg alice hello from charlie!");
-            for l in recv_lines(&mut s, Duration::from_millis(500)) { println!("  <- {l}"); }
+            for l in recv_lines(&mut s, Duration::from_millis(500)) {
+                println!("  <- {l}");
+            }
 
             send(&mut s, "/rooms");
-            for l in recv_lines(&mut s, Duration::from_millis(500)) { println!("  <- {l}"); }
+            for l in recv_lines(&mut s, Duration::from_millis(500)) {
+                println!("  <- {l}");
+            }
 
             send(&mut s, "/join __dm__alice_charlie");
-            for l in recv_lines(&mut s, Duration::from_millis(500)) { println!("  <- {l}"); }
+            for l in recv_lines(&mut s, Duration::from_millis(500)) {
+                println!("  <- {l}");
+            }
 
             send(&mut s, "back at you from DM!");
             loop {
-                for l in recv_lines(&mut s, Duration::from_secs(1)) { println!("  <- {l}"); }
+                for l in recv_lines(&mut s, Duration::from_secs(1)) {
+                    println!("  <- {l}");
+                }
             }
         }
         _ => {}

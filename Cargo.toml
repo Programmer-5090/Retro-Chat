@@ -3,6 +3,9 @@ name = "Retro-Chat"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "retro_chat"
+
 [dependencies]
 cursive = "0.21"
 tokio = { version = "1", features = ["full"] }
