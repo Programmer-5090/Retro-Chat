@@ -20,7 +20,7 @@ pub fn format_title(username: &str) -> String {
     format!("RETRO CHAT — @{}", username)
 }
 
-pub fn format_user_message(msg: &ChatMessage) -> Line<'static> {
+pub fn format_user_message(msg: &ChatMessage) -> Vec<Line<'static>> {
     let timestamp = msg.timestamp.chars().take(5).collect::<String>();
     let ts_span = Span::styled(
         format!("[{}] ", timestamp),
@@ -30,16 +30,39 @@ pub fn format_user_message(msg: &ChatMessage) -> Line<'static> {
         format!("{} \u{25B6} ", msg.username.clone()),
         Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
     );
-    let content_span = Span::styled(
-        msg.content.clone(),
-        Style::default().fg(AMBER),
-    );
-    Line::from(vec![ts_span, user_span, content_span])
+    let mut lines: Vec<Line<'static>> = msg.content
+        .lines()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                Line::from(vec![
+                    ts_span.clone(),
+                    user_span.clone(),
+                    Span::styled(line.to_string(), Style::default().fg(AMBER)),
+                ])
+            } else {
+                let indent = " ".repeat(timestamp.len() + msg.username.len() + 5);
+                Line::from(vec![
+                    Span::styled(indent, Style::default().fg(AMBER)),
+                    Span::styled(line.to_string(), Style::default().fg(AMBER)),
+                ])
+            }
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push(Line::from(vec![ts_span, user_span]));
+    }
+    lines
 }
 
-pub fn format_system_message(msg: &ChatMessage) -> Line<'static> {
-    let text = format!("*** {} ***", msg.content);
-    Line::from(Span::styled(text, Style::default().fg(CYAN)))
+pub fn format_system_message(msg: &ChatMessage) -> Vec<Line<'static>> {
+    msg.content
+        .lines()
+        .map(|line| {
+            let text = format!("*** {} ***", line);
+            Line::from(Span::styled(text, Style::default().fg(CYAN)))
+        })
+        .collect()
 }
 
 pub fn make_system_msg(text: &str) -> ChatMessage {

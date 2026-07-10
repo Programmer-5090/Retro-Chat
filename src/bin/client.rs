@@ -3,6 +3,7 @@ use tokio::{
     io::{ AsyncBufReadExt, AsyncWriteExt, BufReader },
     net::TcpStream,
 };
+use crossterm::terminal::disable_raw_mode;
 
 use retro_chat::client_helpers::{ ClientStream, create_tls_connector };
 use retro_chat::tui::run_chat_ui;
@@ -10,6 +11,8 @@ use retro_chat::ChatMessage;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let _ = disable_raw_mode();
+
     let username = env::args().nth(1).expect("Please provide a username as argument");
 
     let no_tls = std::env::var("NO_TLS").is_ok() || env::args().any(|a| a == "--no-tls");

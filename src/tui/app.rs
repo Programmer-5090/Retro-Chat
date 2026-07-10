@@ -3,13 +3,14 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
     prelude::{CrosstermBackend, Terminal},
     style::{Color, Style},
     symbols::border,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::{
@@ -34,6 +35,16 @@ pub async fn run_chat_ui(
     let (server_tx, server_rx) = mpsc::unbounded_channel::<String>();
     let mut app = App::new(username, writer, server_rx);
     app.run(reader, server_tx).await
+}
+
+struct CleanGuard;
+
+impl Drop for CleanGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let mut stdout = std::io::stdout();
+        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+    }
 }
 
 pub(crate) struct App {
@@ -82,6 +93,7 @@ impl App {
         server_tx: mpsc::UnboundedSender<String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         enable_raw_mode()?;
+        let _guard = CleanGuard;
         let mut stdout = std::io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
@@ -105,10 +117,6 @@ impl App {
         });
 
         let res = self.event_loop(&mut terminal).await;
-
-        disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-        terminal.show_cursor()?;
 
         let _ = self.writer.lock().await.shutdown().await;
         res
@@ -434,7 +442,7 @@ impl App {
 
     fn render_messages(&self, f: &mut Frame, area: Rect) {
         let lines: Vec<ratatui::text::Line> = self.current_room_msgs()
-            .map(|msg| match msg.message_type {
+            .flat_map(|msg| match msg.message_type {
                 MessageType::UserMessage => format_user_message(msg),
                 MessageType::SystemNotification => format_system_message(msg),
                 MessageType::RoomList => unreachable!(),
@@ -456,7 +464,10 @@ impl App {
             .border_style(border_style(FocusPane::Messages, self.focus))
             .title(" Messages ");
 
-        let paragraph = Paragraph::new(lines).block(block).scroll((render_scroll, 0));
+        let paragraph = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false })
+            .scroll((render_scroll, 0));
         f.render_widget(paragraph, area);
     }
 
