@@ -174,12 +174,11 @@ impl AppState {
     }
 
     async fn list_db_rooms(&self) -> Vec<String> {
-        sqlx::query_scalar::<_, String>(
-            "SELECT name FROM rooms WHERE name NOT LIKE '__dm\\_\\_%' ORDER BY name",
-        )
-        .fetch_all(&self.pool)
+        let all: Vec<String> = sqlx::query_scalar::<_, String>("SELECT name FROM rooms ORDER BY name")
+            .fetch_all(&self.pool)
             .await
-            .unwrap_or_default()
+            .unwrap_or_default();
+        all.into_iter().filter(|n| !n.starts_with("__dm__")).collect()
     }
 
     async fn register_sender(&self, username: &str, tx: mpsc::UnboundedSender<String>) {
@@ -453,6 +452,8 @@ async fn handle_connection<S>(
                             continue;
                         }
 
+                        let old_room = state.get_user_room(&username).await;
+
                         let new_room_id: i32 = state.get_or_create_db_room(room_name, &username).await;
                         state.join_room(&username, room_name, out_tx.clone()).await;
 
@@ -484,23 +485,26 @@ async fn handle_connection<S>(
                             let _ = out_tx.send(msg_json);
                         }
 
-                        let leave_notice = ChatMessage {
-                            username: username.clone(),
-                            content: format!("Joined room '{}'", room_name),
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            message_type: SystemNotification,
-                        };
-                        let leave_json = serde_json::to_string(&leave_notice).unwrap();
-                        state.send_to_room("general", &leave_json).await;
+                        let dm_move = old_room.starts_with("__dm__") || room_name.starts_with("__dm__");
+                        if !dm_move {
+                            let leave_notice = ChatMessage {
+                                username: username.clone(),
+                                content: format!("Left the room"),
+                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                message_type: SystemNotification,
+                            };
+                            let leave_json = serde_json::to_string(&leave_notice).unwrap();
+                            state.send_to_room(&old_room, &leave_json).await;
 
-                        let join_notice = ChatMessage {
-                            username: username.clone(),
-                            content: format!("Joined the room"),
-                            timestamp: Local::now().format("%H:%M:%S").to_string(),
-                            message_type: SystemNotification,
-                        };
-                        let join_json = serde_json::to_string(&join_notice).unwrap();
-                        state.send_to_room(room_name, &join_json).await;
+                            let join_notice = ChatMessage {
+                                username: username.clone(),
+                                content: format!("Joined the room"),
+                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                message_type: SystemNotification,
+                            };
+                            let join_json = serde_json::to_string(&join_notice).unwrap();
+                            state.send_to_room(room_name, &join_json).await;
+                        }
 
                         line.clear();
                         continue;
@@ -801,14 +805,16 @@ async fn handle_connection<S>(
     let _: Result<usize, _> = redis_conn.del(format!("presence:{}", username));
 
     let user_room = state.get_user_room(&username).await;
-    let leave_msg = ChatMessage {
-        username: username.clone(),
-        content: "Left the chat".to_string(),
-        timestamp: Local::now().format("%H:%M:%S").to_string(),
-        message_type: SystemNotification,
-    };
-    let leave_json = serde_json::to_string(&leave_msg).unwrap();
-    state.send_to_room(&user_room, &leave_json).await;
+    if !user_room.starts_with("__dm__") {
+        let leave_msg = ChatMessage {
+            username: username.clone(),
+            content: "Left the chat".to_string(),
+            timestamp: Local::now().format("%H:%M:%S").to_string(),
+            message_type: SystemNotification,
+        };
+        let leave_json = serde_json::to_string(&leave_msg).unwrap();
+        state.send_to_room(&user_room, &leave_json).await;
+    }
 
     state.leave_all_rooms(&username).await;
     state.unregister_sender(&username).await;
