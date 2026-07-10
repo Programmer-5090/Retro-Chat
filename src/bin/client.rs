@@ -42,31 +42,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
         if buf.is_empty() {
             break;
         }
-        if
-            let Ok(msg) = serde_json::from_str::<ChatMessage>(buf.trim()) &&
-            msg.username == "Server"
-        {
-            println!("{}", msg.content);
-            if msg.content.contains("Token:") {
-                break;
-            }
-            print!("Enter password: ");
-            io::stdout().flush()?;
-            let mut password = String::new();
-            io::stdin().read_line(&mut password)?;
-            let password = password.trim().to_string();
-            let password = password
-                .strip_prefix("/register ")
-                .or(password.strip_prefix("/login "))
-                .unwrap_or(&password)
-                .to_string();
-            let cmd = if msg.content.contains("Register") {
-                format!("/register {}\n", password)
-            } else {
-                format!("/login {}\n", password)
-            };
-            writer.write_all(cmd.as_bytes()).await?;
+        let msg = match serde_json::from_str::<ChatMessage>(buf.trim()) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if msg.username != "Server" {
+            continue;
         }
+        println!("{}", msg.content);
+        if msg.content.contains("Token:") {
+            break;
+        }
+        print!("Enter password: ");
+        io::stdout().flush()?;
+        let mut password = String::new();
+        io::stdin().read_line(&mut password)?;
+        let password = password.trim().to_string();
+        let password = password
+            .strip_prefix("/register ")
+            .or(password.strip_prefix("/login "))
+            .unwrap_or(&password)
+            .to_string();
+        let cmd = if msg.content.contains("Register") {
+            format!("/register {}\n", password)
+        } else {
+            format!("/login {}\n", password)
+        };
+        writer.write_all(cmd.as_bytes()).await?;
     }
 
     run_chat_ui(username, reader, writer).await

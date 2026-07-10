@@ -91,4 +91,54 @@ impl AppState {
     pub async fn get_sender(&self, username: &str) -> Option<mpsc::UnboundedSender<String>> {
         self.user_senders.read().await.get(username).cloned()
     }
+
+    pub async fn save_room_membership(&self, username: &str, room: &str) {
+        let room_id = self.get_or_create_db_room(room, "system").await;
+        sqlx::query(
+            "INSERT INTO room_members (room_id, username) VALUES ($1, $2) ON CONFLICT (room_id, username) DO UPDATE SET last_joined_at = now()"
+        )
+            .bind(room_id)
+            .bind(username)
+            .execute(&self.pool)
+            .await
+            .ok();
+    }
+
+    pub async fn remove_room_membership(&self, username: &str, room: &str) {
+        let room_id: Option<i32> = sqlx::query_scalar("SELECT id FROM rooms WHERE name = $1")
+            .bind(room)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten();
+        if let Some(id) = room_id {
+            sqlx::query("DELETE FROM room_members WHERE room_id = $1 AND username = $2")
+                .bind(id)
+                .bind(username)
+                .execute(&self.pool)
+                .await
+                .ok();
+        }
+    }
+
+    pub async fn get_user_room_memberships(&self, username: &str) -> Vec<String> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT r.name FROM room_members rm JOIN rooms r ON rm.room_id = r.id WHERE rm.username = $1 ORDER BY rm.last_joined_at DESC"
+        )
+            .bind(username)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default()
+    }
+
+    pub async fn get_last_room(&self, username: &str) -> Option<String> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT r.name FROM room_members rm JOIN rooms r ON rm.room_id = r.id WHERE rm.username = $1 ORDER BY rm.last_joined_at DESC LIMIT 1"
+        )
+            .bind(username)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
+    }
 }

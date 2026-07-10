@@ -29,11 +29,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state = AppState::new(pool, redis_client);
 
     let tls_status = if tls_acceptor.is_some() { "TLS" } else { "TCP" };
-    println!("╔═════════════════════════════════════════════╗");
-    println!("║          RETRO CHAT SERVER ACTIVE           ║");
-    println!("║   {tls_status}  Listening on: {bind_addr}   ║");
-    println!("║          Press Ctrl+C to shutdown           ║");
-    println!("╚═════════════════════════════════════════════╝");
+    let line1 = "RETRO CHAT SERVER ACTIVE";
+    let line2 = format!("{}  Listening on: {}", tls_status, bind_addr);
+    let line3 = "Press Ctrl+C to shutdown";
+    let inner_width = line1.len().max(line2.len()).max(line3.len()) + 2;
+    let bar: String = "═".repeat(inner_width);
+    let pad = |s: &str| format!("║ {:<width$} ║", s, width = inner_width - 2);
+    println!("╔{}╗", bar);
+    println!("{}", pad(line1));
+    println!("{}", pad(&line2));
+    println!("{}", pad(line3));
+    println!("╚{}╝", bar);
 
     loop {
         let (socket, addr) = listener.accept().await?;

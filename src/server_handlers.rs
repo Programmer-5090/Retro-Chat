@@ -140,6 +140,54 @@ async fn authenticate_user(
     true
 }
 
+async fn send_room_list(state: &AppState, username: &str, out_tx: &mpsc::UnboundedSender<String>) {
+    let memberships = state.get_user_room_memberships(username).await;
+    let room_names = if memberships.is_empty() {
+        "general".to_string()
+    } else {
+        memberships.join(",")
+    };
+    let msg = ChatMessage {
+        username: "Server".to_string(),
+        content: room_names,
+        timestamp: Local::now().format("%H:%M:%S").to_string(),
+        message_type: MessageType::RoomList,
+    };
+    let json = serde_json::to_string(&msg).unwrap();
+    let _ = out_tx.send(json);
+}
+
+async fn handle_leave_command(
+    state: &AppState,
+    writer: &mut (impl AsyncWrite + Unpin),
+    username: &str,
+    out_tx: &mpsc::UnboundedSender<String>,
+) {
+    let current_room = state.get_user_room(username).await;
+    if current_room == "general" {
+        send_notice(writer, "Cannot leave the default room.").await;
+        return;
+    }
+
+    state.remove_room_membership(username, &current_room).await;
+
+    let leave_notice = ChatMessage {
+        username: username.to_string(),
+        content: "Left the room".to_string(),
+        timestamp: Local::now().format("%H:%M:%S").to_string(),
+        message_type: MessageType::SystemNotification,
+    };
+    let leave_json = serde_json::to_string(&leave_notice).unwrap();
+    state.send_to_room(&current_room, &leave_json).await;
+
+    let fallback = state.get_last_room(username).await
+        .unwrap_or_else(|| "general".to_string());
+    state.join_room(username, &fallback, out_tx.clone()).await;
+    send_notice(writer, &format!("Left '{}'. Now in '{}'.", current_room, fallback)).await;
+    replay_history(state, &fallback, out_tx).await;
+    send_room_list(state, username, out_tx).await;
+}
+
 async fn replay_history(state: &AppState, room_name: &str, out_tx: &mpsc::UnboundedSender<String>) {
     let room_id: i32 = state.get_or_create_db_room(room_name, "system").await;
     let rows = sqlx::query_as::<_, (String, String, chrono::DateTime<chrono::Utc>, String)>(
@@ -180,8 +228,10 @@ async fn handle_join_command(
     let old_room = state.get_user_room(username).await;
     let _new_room_id: i32 = state.get_or_create_db_room(room_name, username).await;
     state.join_room(username, room_name, out_tx.clone()).await;
+    state.save_room_membership(username, room_name).await;
     send_notice(writer, &format!("Joined room '{}'.", room_name)).await;
     replay_history(state, room_name, out_tx).await;
+    send_room_list(state, username, out_tx).await;
 
     let dm_move = old_room.starts_with("__dm__") || room_name.starts_with("__dm__");
     if !dm_move {
@@ -247,8 +297,10 @@ async fn handle_msg_command(
 
     let room_id: i32 = state.get_or_create_db_room(&dm_room, username).await;
     state.join_room(username, &dm_room, out_tx.clone()).await;
+    state.save_room_membership(username, &dm_room).await;
     send_notice(writer, &format!("Now in DM with {}.", target)).await;
     replay_history(state, &dm_room, out_tx).await;
+    send_room_list(state, username, out_tx).await;
 
     let dm_msg = ChatMessage {
         username: username.to_string(),
@@ -269,9 +321,12 @@ async fn handle_msg_command(
 
     state.send_to_room(&dm_room, &dm_json).await;
 
+    state.save_room_membership(target, &dm_room).await;
+
     if let Some(target_tx) = state.get_sender(target).await {
-        let whisper = build_notice(&format!("DM from {}: '{}'. /join {} to reply.", username, dm_text, dm_room));
+        let whisper = build_notice(&format!("DM from {}: '{}'. Check your sidebar to join.", username, dm_text));
         let _ = target_tx.send(whisper);
+        send_room_list(state, target, &target_tx).await;
     }
 }
 
@@ -516,10 +571,14 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
 
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
     state.register_sender(&username, out_tx.clone()).await;
-    state.join_room(&username, "general", out_tx.clone()).await;
-    let current_room = "general".to_string();
+
+    let current_room = state.get_last_room(&username).await
+        .unwrap_or_else(|| "general".to_string());
+    state.join_room(&username, &current_room, out_tx.clone()).await;
+    state.save_room_membership(&username, &current_room).await;
 
     replay_history(&state, &current_room, &out_tx).await;
+    send_room_list(&state, &username, &out_tx).await;
 
     let join_msg = ChatMessage {
         username: username.clone(),
@@ -543,6 +602,8 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                 if input.starts_with('/') {
                     if let Some(args) = input.strip_prefix("/join ") {
                         handle_join_command(&state, &mut writer, &username, &out_tx, args).await;
+                    } else if input == "/leave" {
+                        handle_leave_command(&state, &mut writer, &username, &out_tx).await;
                     } else if input.starts_with("/rooms") {
                         let rooms = state.list_db_rooms().await;
                         if rooms.is_empty() {

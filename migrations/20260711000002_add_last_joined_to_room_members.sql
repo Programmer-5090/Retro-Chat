@@ -1,0 +1,1 @@
+ALTER TABLE room_members ADD COLUMN IF NOT EXISTS last_joined_at TIMESTAMPTZ NOT NULL DEFAULT now();

@@ -15,6 +15,7 @@ pub struct ChatMessage {
 pub enum MessageType {
     UserMessage,
     SystemNotification,
+    RoomList,
 }
 
 pub fn build_notice(text: &str) -> String {

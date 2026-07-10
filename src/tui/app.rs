@@ -251,16 +251,14 @@ impl App {
 
             match cmd {
                 "/help" => {
-                    let help_text =
-                        "\
-                            Commands: \
-                            /join <room> — join a room | \
-                            /leave — leave current room | \
-                            /rooms — list server rooms | \
-                            /dm <user> <msg> — direct message | \
-                            /help — show this help | \
-                            /clear — clear messages | \
-                            /quit — quit";
+                    let help_text = "Commands:\n\
+                        /join <room>    — join a room\n\
+                        /leave          — leave current room\n\
+                        /rooms          — list server rooms\n\
+                        /dm <user> <msg> — direct message\n\
+                        /clear          — clear messages\n\
+                        /help           — show this help\n\
+                        /quit           — quit";
                     self.push_msg(make_system_msg(help_text));
                 }
                 "/clear" => {
@@ -309,7 +307,16 @@ impl App {
                     if user.is_empty() || dm_msg.is_empty() {
                         self.push_msg(make_system_msg("Usage: /dm <user> <message>"));
                     } else {
-                        let wire = format!("/dm {} {}\n", user, dm_msg);
+                        let mut users = vec![self.username.clone(), user.to_string()];
+                        users.sort();
+                        let dm_room = format!("__dm__{}", users.join("_"));
+                        if !self.rooms.iter().any(|r| r == &dm_room) {
+                            self.rooms.push(dm_room.clone());
+                        }
+                        self.messages.retain(|(r, _)| r != &self.current_room);
+                        self.current_room = dm_room;
+                        self.scroll_offset = 0;
+                        let wire = format!("/msg {} {}\n", user, dm_msg);
                         let _ = self.writer.lock().await.write_all(wire.as_bytes()).await;
                     }
                 }
@@ -331,9 +338,26 @@ impl App {
         }
 
         if let Ok(msg) = serde_json::from_str::<ChatMessage>(line) {
-            self.push_msg(msg);
-            let visible: usize = 20;
-            self.clamp_scroll(visible);
+            match msg.message_type {
+                MessageType::RoomList => {
+                    self.rooms = msg.content
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if self.rooms.is_empty() {
+                        self.rooms.push("general".to_string());
+                    }
+                    if !self.rooms.iter().any(|r| r == &self.current_room) {
+                        self.current_room = self.rooms[0].clone();
+                    }
+                }
+                _ => {
+                    self.push_msg(msg);
+                    let visible: usize = 20;
+                    self.clamp_scroll(visible);
+                }
+            }
         }
     }
 
@@ -413,6 +437,7 @@ impl App {
             .map(|msg| match msg.message_type {
                 MessageType::UserMessage => format_user_message(msg),
                 MessageType::SystemNotification => format_system_message(msg),
+                MessageType::RoomList => unreachable!(),
             })
             .collect();
 
