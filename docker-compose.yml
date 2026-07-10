@@ -8,6 +8,7 @@ services:
       DATABASE_URL: postgres://retrochat:retrochat@postgres:5432/retrochat
       REDIS_URL: redis://redis:6379
       BIND_ADDR: 0.0.0.0:8082
+      # NO_TLS: 1
     volumes:
       - ./cert.pem:/usr/local/bin/cert.pem
       - ./key.pem:/usr/local/bin/key.pem
