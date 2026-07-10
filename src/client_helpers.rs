@@ -3,12 +3,6 @@ use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::TcpStream,
 };
-use cursive::{
-    Cursive,
-    theme::{BaseColor, BorderStyle, Color, Palette, PaletteColor, Theme},
-    views::{EditView, TextView},
-};
-use tokio::io::AsyncWriteExt;
 
 pub enum ClientStream {
     Plain(TcpStream),
@@ -58,67 +52,6 @@ impl AsyncWrite for ClientStream {
 }
 
 pub type IoWriter = tokio::io::WriteHalf<ClientStream>;
-
-pub fn send_message(siv: &mut Cursive, msg: String) {
-    if msg.is_empty() {
-        return;
-    }
-
-    match msg.as_str() {
-        "/help" => {
-            siv.call_on_name("messages", |view: &mut TextView| {
-                view.append(
-                    "\n=== Commands ===\n/help - Show this help\n/clear - Clear messages\n/quit - Exit chat\n\n"
-                );
-            });
-            siv.call_on_name("input", |view: &mut EditView| {
-                view.set_content("");
-            });
-            return;
-        }
-        "/clear" => {
-            siv.call_on_name("messages", |view: &mut TextView| {
-                view.set_content("");
-            });
-            siv.call_on_name("input", |view: &mut EditView| {
-                view.set_content("");
-            });
-            return;
-        }
-        "/quit" => {
-            siv.quit();
-            return;
-        }
-        _ => {}
-    }
-
-    let writer = siv.user_data::<Arc<tokio::sync::Mutex<IoWriter>>>().unwrap().clone();
-
-    tokio::spawn(async move {
-        let _ = writer.lock().await.write_all(format!("{}\n", msg).as_bytes()).await;
-    });
-
-    siv.call_on_name("input", |view: &mut EditView| {
-        view.set_content("");
-    });
-}
-
-pub fn create_retro_theme() -> Theme {
-    let mut palette = Palette::default();
-    palette[PaletteColor::Background] = Color::Dark(BaseColor::Black);
-    palette[PaletteColor::View] = Color::Dark(BaseColor::Black);
-    palette[PaletteColor::Primary] = Color::Light(BaseColor::Green);
-    palette[PaletteColor::Secondary] = Color::Light(BaseColor::Green);
-    palette[PaletteColor::Tertiary] = Color::Light(BaseColor::White);
-    palette[PaletteColor::TitlePrimary] = Color::Light(BaseColor::Green);
-    palette[PaletteColor::Highlight] = Color::Light(BaseColor::Green);
-
-    Theme {
-        palette,
-        borders: BorderStyle::Simple,
-        ..Default::default()
-    }
-}
 
 pub fn create_tls_connector() -> Result<tokio_rustls::TlsConnector, Box<dyn std::error::Error>> {
     let ca_path = std::env::var("CA_CERT").unwrap_or_else(|_| "ca.pem".to_string());

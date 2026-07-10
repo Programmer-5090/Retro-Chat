@@ -3,7 +3,7 @@ pub mod tls;
 pub mod app_state;
 pub mod server_handlers;
 pub mod client_helpers;
-pub mod client_ui;
+pub mod tui;
 
 pub use message::{ChatMessage, MessageType, build_notice};
 pub use tls::load_tls_config;

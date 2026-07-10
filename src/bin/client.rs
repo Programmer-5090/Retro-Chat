@@ -5,7 +5,7 @@ use tokio::{
 };
 
 use retro_chat::client_helpers::{ ClientStream, create_tls_connector };
-use retro_chat::client_ui::run_chat_ui;
+use retro_chat::tui::run_chat_ui;
 use retro_chat::ChatMessage;
 
 #[tokio::main]
