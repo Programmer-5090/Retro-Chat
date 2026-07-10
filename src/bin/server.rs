@@ -1,7 +1,7 @@
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     net::TcpListener,
-    sync::broadcast,
+    sync::mpsc,
 };
 use serde::{Deserialize, Serialize};
 use chrono::Local;
@@ -525,6 +525,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     sqlx::migrate!().run(&pool).await?;
 
+    sqlx::query("INSERT INTO rooms (name, created_by) VALUES ('general', 'system') ON CONFLICT (name) DO NOTHING")
+        .execute(&pool)
+        .await?;
+
     let tls_status = if tls_acceptor.is_some() { "TLS" } else { "TCP" };
     println!("╔═════════════════════════════════════════════╗");
     println!("║          RETRO CHAT SERVER ACTIVE           ║");
@@ -532,16 +536,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("║          Press Ctrl+C to shutdown           ║");
     println!("╚═════════════════════════════════════════════╝");
 
-    let (tx, _rx) = broadcast::channel::<String>(100);
-
     loop {
         let (socket, addr) = listener.accept().await?;
 
         println!("┌─[{}] New connection", Local::now().format("%H:%M:%S"));
         println!("└─ Address: {}", addr);
 
-        let tx = tx.clone();
-        let rx = tx.subscribe();
         let pool = pool.clone();
         let redis_client = redis_client.clone();
 
@@ -567,7 +567,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             match acceptor.accept(socket).await {
                 Ok(tls_stream) => {
                     tokio::spawn(async move {
-                        handle_connection(tls_stream, addr, tx, rx, pool, redis_client).await
+                        handle_connection(tls_stream, addr, pool, redis_client).await
                     });
                 }
                 Err(e) => {
@@ -576,7 +576,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         } else {
             tokio::spawn(async move {
-                handle_connection(socket, addr, tx, rx, pool, redis_client).await
+                handle_connection(socket, addr, pool, redis_client).await
             });
         }
     }
