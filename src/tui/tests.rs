@@ -2,7 +2,7 @@ use proptest::prelude::*;
 
 use super::types::{FocusPane, UiAppState};
 use ratatui::style::Color;
-use super::render::{border_style, format_title, format_user_message, format_system_message};
+use super::render::{border_style, format_gradient_title, format_user_message, format_system_message};
 
 use crate::ChatMessage;
 use crate::message::MessageType;
@@ -157,9 +157,10 @@ proptest! {
 proptest! {
     #[test]
     fn prop_border_style_colours(pane in arb_focus_pane(), focus in arb_focus_pane()) {
-        let style = border_style(pane, focus);
+        let style = border_style(pane, focus, 0);
         if pane == focus {
-            assert_eq!(style.fg, Some(Color::Cyan), "focused pane should have CYAN border");
+            assert!(style.fg.is_some(), "focused pane should have a border color");
+            assert_ne!(style.fg.unwrap(), Color::Rgb(255, 176, 0), "focused pane should not be AMBER");
         } else {
             assert_eq!(style.fg.unwrap(), Color::Rgb(255, 176, 0), "unfocused pane should have AMBER border");
         }
@@ -170,9 +171,44 @@ proptest! {
 proptest! {
     #[test]
     fn prop_title_contains_username(username in "[a-zA-Z0-9_]{1,32}") {
-        let title = format_title(&username);
+        let line = format_gradient_title(&username);
+        let title: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(title.contains("RETRO CHAT"), "title missing app name: {title}");
         assert!(title.contains(&format!("@{}", username)), "title missing username: {title}");
+    }
+}
+
+#[test]
+fn test_mention_highlighting() {
+    let msg = ChatMessage {
+        id: String::new(),
+        username: "alice".into(),
+        content: "hi @bob how are you".into(),
+        timestamp: "12:34:56".into(),
+        message_type: MessageType::UserMessage,
+        room: String::new(),
+        is_history: false,
+    };
+    let lines = format_user_message(&msg, Color::Rgb(255, 176, 0));
+    let rendered: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+    assert!(rendered.contains("@bob"), "rendered should contain @bob");
+    assert!(rendered.contains("hi "), "rendered should contain 'hi '");
+    // Check that @bob span is actually styled cyan
+    assert!(lines.len() == 1, "should have 1 line");
+    let spans = &lines[0].spans;
+    let mention_spans: Vec<_> = spans.iter().filter(|s| s.content == "@bob").collect();
+    assert!(!mention_spans.is_empty(), "should have a span with @bob content");
+    for s in &mention_spans {
+        assert_eq!(
+            s.style.fg,
+            Some(Color::Cyan),
+            "@bob span should be cyan, got {:?}",
+            s.style.fg
+        );
+        assert!(
+            s.style.add_modifier.contains(ratatui::style::Modifier::BOLD),
+            "@bob span should be bold"
+        );
     }
 }
 

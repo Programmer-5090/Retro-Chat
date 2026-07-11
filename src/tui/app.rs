@@ -27,10 +27,10 @@ use crate::client_helpers::ClientStream;
 use crate::message::MessageType;
 use crate::ChatMessage;
 
-use super::render::{
-    border_style, format_system_message, format_title,
-    format_user_message, make_system_msg,
-};
+    use super::render::{
+        border_style, format_gradient_title, format_system_message,
+        format_user_message, make_system_msg,
+    };
 use super::types::{AMBER, BLACK, CYAN, ORANGE, READ, FocusPane};
 
 pub async fn run_chat_ui(
@@ -71,6 +71,7 @@ pub struct App {
     read_message_ids: HashSet<String>,
     message_times: VecDeque<Instant>,
     sparkline_data: VecDeque<u16>,
+    pulse_tick: u64,
 }
 
 impl App {
@@ -100,6 +101,7 @@ impl App {
             read_message_ids: HashSet::new(),
             message_times: VecDeque::new(),
             sparkline_data: VecDeque::from(vec![0u16; 40]),
+            pulse_tick: 0,
         }
     }
 
@@ -145,6 +147,7 @@ impl App {
         loop {
             terminal.draw(|f| self.render(f))?;
 
+            self.pulse_tick = self.pulse_tick.wrapping_add(1);
             let now = Instant::now();
             if now - last_sparkline_tick >= Duration::from_secs(1) {
                 let cutoff = now - Duration::from_secs(2);
@@ -479,6 +482,9 @@ impl App {
                     } else {
                         String::new()
                     };
+                    if is_history && msg.username == self.username && !msg.id.is_empty() {
+                        self.read_message_ids.insert(msg.id.clone());
+                    }
                     self.ingest_msg(msg, is_current_room);
                     if is_current_room && !is_history {
                         self.clear_room_read_state(&room);
@@ -531,9 +537,9 @@ impl App {
     }
 
     fn render_title_bar(&self, f: &mut Frame, area: Rect) {
-        let title = format_title(&self.username);
+        let title = format_gradient_title(&self.username);
         let widget = Paragraph::new(title)
-            .style(Style::default().fg(AMBER))
+            .style(Style::default())
             .alignment(ratatui::layout::Alignment::Center);
         f.render_widget(widget, area);
     }
@@ -565,7 +571,7 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .border_style(border_style(FocusPane::Sidebar, self.focus))
+            .border_style(border_style(FocusPane::Sidebar, self.focus, self.pulse_tick))
             .title(" Rooms ");
 
         let paragraph = Paragraph::new(lines)
@@ -608,7 +614,7 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .border_style(border_style(FocusPane::Messages, self.focus))
+            .border_style(border_style(FocusPane::Messages, self.focus, self.pulse_tick))
             .title(" Messages ");
 
         let paragraph = Paragraph::new(lines)
@@ -628,7 +634,7 @@ impl App {
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
-                .border_style(border_style(FocusPane::Input, self.focus))
+                .border_style(border_style(FocusPane::Input, self.focus, self.pulse_tick))
                 .title(" Message "),
         );
         f.render_widget(&self.textarea, area);
