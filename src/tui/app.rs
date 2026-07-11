@@ -31,7 +31,7 @@ use crate::ChatMessage;
         border_style, format_gradient_title, format_system_message,
         format_user_message, make_system_msg,
     };
-use super::types::{AMBER, BLACK, CYAN, ORANGE, READ, FocusPane};
+use super::types::{FocusPane, Theme, THEMES};
 
 pub async fn run_chat_ui(
     username: String,
@@ -72,6 +72,8 @@ pub struct App {
     message_times: VecDeque<Instant>,
     sparkline_data: VecDeque<u16>,
     pulse_tick: u64,
+    theme: Theme,
+    theme_idx: usize,
 }
 
 impl App {
@@ -80,10 +82,11 @@ impl App {
         writer: tokio::io::WriteHalf<ClientStream>,
         server_rx: mpsc::UnboundedReceiver<String>,
     ) -> Self {
+        let default_theme = &THEMES[0];
         let mut ta = TextArea::default();
         ta.set_cursor_line_style(Style::default());
-        ta.set_style(Style::default().fg(AMBER).bg(BLACK));
-        ta.set_cursor_style(Style::default().bg(AMBER));
+        ta.set_style(Style::default().fg(default_theme.primary).bg(default_theme.bg));
+        ta.set_cursor_style(Style::default().bg(default_theme.primary));
 
         Self {
             username,
@@ -102,6 +105,8 @@ impl App {
             message_times: VecDeque::new(),
             sparkline_data: VecDeque::from(vec![0u16; 40]),
             pulse_tick: 0,
+            theme: *default_theme,
+            theme_idx: 0,
         }
     }
 
@@ -282,6 +287,15 @@ impl App {
             }
             KeyCode::F(1) => {
                 self.focus = FocusPane::Sidebar;
+                return;
+            }
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.theme_idx = (self.theme_idx + 1) % THEMES.len();
+                self.theme = THEMES[self.theme_idx];
+                self.textarea.set_style(
+                    Style::default().fg(self.theme.primary).bg(self.theme.bg),
+                );
+                self.textarea.set_cursor_style(Style::default().bg(self.theme.primary));
                 return;
             }
             _ => {}
@@ -554,11 +568,11 @@ impl App {
                 let prefix = if has_unread { "\u{25CF} " } else { "  " };
                 let display = format!("{}{}", prefix, room);
                 let style = if active {
-                    Style::default().fg(CYAN)
+                    Style::default().fg(self.theme.accent)
                 } else if has_unread {
-                    Style::default().fg(CYAN).add_modifier(ratatui::style::Modifier::BOLD)
+                    Style::default().fg(self.theme.accent).add_modifier(ratatui::style::Modifier::BOLD)
                 } else {
-                    Style::default().fg(AMBER)
+                    Style::default().fg(self.theme.primary)
                 };
                 ratatui::text::Line::from(ratatui::text::Span::styled(display, style))
             })
@@ -571,7 +585,7 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .border_style(border_style(FocusPane::Sidebar, self.focus, self.pulse_tick))
+            .border_style(border_style(FocusPane::Sidebar, self.focus, self.pulse_tick, &self.theme))
             .title(" Rooms ");
 
         let paragraph = Paragraph::new(lines)
@@ -587,16 +601,16 @@ impl App {
                 MessageType::UserMessage => {
                     let color = if msg.username == self.username {
                         if self.read_message_ids.contains(&msg.id) {
-                            READ
+                            self.theme.success
                         } else {
-                            AMBER
+                            self.theme.primary
                         }
                     } else {
-                        ORANGE
+                        self.theme.secondary
                     };
-                    format_user_message(msg, color)
+                    format_user_message(msg, color, self.theme.accent)
                 }
-                MessageType::SystemNotification => format_system_message(msg),
+                MessageType::SystemNotification => format_system_message(msg, self.theme.accent),
                 MessageType::RoomList => unreachable!(),
                 MessageType::ReadReceipt => unreachable!(),
             })
@@ -614,7 +628,7 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .border_style(border_style(FocusPane::Messages, self.focus, self.pulse_tick))
+            .border_style(border_style(FocusPane::Messages, self.focus, self.pulse_tick, &self.theme))
             .title(" Messages ");
 
         let paragraph = Paragraph::new(lines)
@@ -626,7 +640,7 @@ impl App {
 
     fn render_input(&mut self, f: &mut Frame, area: Rect) {
         if self.focus == FocusPane::Input {
-            self.textarea.set_cursor_style(Style::default().bg(CYAN));
+            self.textarea.set_cursor_style(Style::default().bg(self.theme.accent));
         } else {
             self.textarea.set_cursor_style(Style::default());
         }
@@ -634,7 +648,7 @@ impl App {
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
-                .border_style(border_style(FocusPane::Input, self.focus, self.pulse_tick))
+                .border_style(border_style(FocusPane::Input, self.focus, self.pulse_tick, &self.theme))
                 .title(" Message "),
         );
         f.render_widget(&self.textarea, area);
@@ -644,7 +658,7 @@ impl App {
         let spark_data: Vec<u64> = self.sparkline_data.iter().map(|v| *v as u64).collect();
         let spark = Sparkline::default()
             .data(&spark_data)
-            .style(Style::default().fg(AMBER).bg(BLACK));
+            .style(Style::default().fg(self.theme.primary).bg(self.theme.bg));
         let spark_area = Rect {
             x: area.x + area.width.saturating_sub(41),
             y: area.y,
@@ -682,7 +696,7 @@ impl App {
 
         if area.width < 17 || area.height < 6 {
             let msg = Paragraph::new("Terminal too small \u{2014} please resize")
-                .style(Style::default().fg(AMBER).bg(BLACK));
+            .style(Style::default().fg(self.theme.primary).bg(self.theme.bg));
             f.render_widget(msg, area);
             return;
         }

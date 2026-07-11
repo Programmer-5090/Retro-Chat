@@ -1,6 +1,6 @@
 use proptest::prelude::*;
 
-use super::types::{FocusPane, UiAppState};
+use super::types::{FocusPane, THEMES, UiAppState};
 use ratatui::style::Color;
 use super::render::{border_style, format_gradient_title, format_user_message, format_system_message};
 
@@ -157,12 +157,12 @@ proptest! {
 proptest! {
     #[test]
     fn prop_border_style_colours(pane in arb_focus_pane(), focus in arb_focus_pane()) {
-        let style = border_style(pane, focus, 0);
+        let style = border_style(pane, focus, 0, &THEMES[0]);
         if pane == focus {
             assert!(style.fg.is_some(), "focused pane should have a border color");
-            assert_ne!(style.fg.unwrap(), Color::Rgb(255, 176, 0), "focused pane should not be AMBER");
+            assert_ne!(style.fg.unwrap(), THEMES[0].primary, "focused pane should not be PRIMARY");
         } else {
-            assert_eq!(style.fg.unwrap(), Color::Rgb(255, 176, 0), "unfocused pane should have AMBER border");
+            assert_eq!(style.fg.unwrap(), THEMES[0].primary, "unfocused pane should have AMBER border");
         }
     }
 }
@@ -189,7 +189,7 @@ fn test_mention_highlighting() {
         room: String::new(),
         is_history: false,
     };
-    let lines = format_user_message(&msg, Color::Rgb(255, 176, 0));
+    let lines = format_user_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan);
     let rendered: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
     assert!(rendered.contains("@bob"), "rendered should contain @bob");
     assert!(rendered.contains("hi "), "rendered should contain 'hi '");
@@ -216,7 +216,7 @@ fn test_mention_highlighting() {
 proptest! {
     #[test]
     fn prop_user_message_format(msg in arb_chat_message().prop_filter("must be UserMessage", |m| matches!(m.message_type, MessageType::UserMessage))) {
-        let lines = format_user_message(&msg, Color::Rgb(255, 176, 0));
+        let lines = format_user_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan);
         let rendered: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(rendered.contains(&msg.username), "missing username");
         assert!(rendered.contains("\u{25B6}"), "missing ▶ separator");
@@ -229,7 +229,7 @@ proptest! {
 proptest! {
     #[test]
     fn prop_system_message_format(msg in arb_chat_message().prop_filter("must be SystemNotification", |m| matches!(m.message_type, MessageType::SystemNotification))) {
-        let lines = format_system_message(&msg);
+        let lines = format_system_message(&msg, Color::Cyan);
         let rendered: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(rendered.starts_with("*** "), "should start with ***");
         assert!(rendered.ends_with(" ***"), "should end with ***");

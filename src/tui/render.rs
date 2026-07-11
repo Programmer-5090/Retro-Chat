@@ -1,5 +1,3 @@
-use std::f64::consts::TAU;
-
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -8,37 +6,38 @@ use chrono::Local;
 
 use crate::ChatMessage;
 use crate::message::MessageType;
-use super::types::{AMBER, CYAN, FocusPane};
+use super::types::{FocusPane, Theme};
 
-pub fn border_style(pane: FocusPane, focus: FocusPane, pulse_tick: u64) -> Style {
+pub fn border_style(pane: FocusPane, focus: FocusPane, pulse_tick: u64, theme: &Theme) -> Style {
     if pane == focus {
         let phase = ((pulse_tick as f64) * 0.08).sin() * 0.5 + 0.5;
-        let g = (180.0 + phase * 75.0) as u8;
-        let b = (200.0 + phase * 55.0) as u8;
-        Style::default().fg(Color::Rgb(0, g, b))
+        let factor = 0.7 + phase * 0.3;
+        if let Color::Rgb(r, g, b) = theme.accent {
+            let nr = ((r as f64) * factor) as u8;
+            let ng = ((g as f64) * factor) as u8;
+            let nb = ((b as f64) * factor) as u8;
+            Style::default().fg(Color::Rgb(nr, ng, nb))
+        } else {
+            Style::default().fg(theme.accent)
+        }
     } else {
-        Style::default().fg(AMBER)
+        Style::default().fg(theme.primary)
     }
 }
 
 pub fn format_gradient_title(username: &str) -> Line<'static> {
-    let text = format!("RETRO CHAT \u{2014} @{}", username);
-    let len = text.chars().count().max(1);
-    let spans: Vec<Span<'static>> = text
-        .chars()
-        .enumerate()
-        .map(|(i, c)| {
-            let t = i as f64 / len as f64;
-            let r = (127.0 + 128.0 * (t * TAU).sin()) as u8;
-            let g = (127.0 + 128.0 * ((t * TAU) + TAU / 3.0).sin()) as u8;
-            let b = (127.0 + 128.0 * ((t * TAU) + 2.0 * TAU / 3.0).sin()) as u8;
-            Span::styled(c.to_string(), Style::default().fg(Color::Rgb(r, g, b)))
-        })
-        .collect();
-    Line::from(spans)
+    let text = format!("  RETRO CHAT \u{2014} @{}  ", username);
+    let line = format!("{}\u{2580}{}\u{2580}{}",
+        "\u{2588}".repeat(2),
+        text,
+        "\u{2588}".repeat(2));
+    Line::from(Span::styled(
+        line,
+        Style::default().fg(Color::Rgb(0, 200, 0)),
+    ))
 }
 
-fn highlight_mentions(text: &str, base_color: Color) -> Vec<Span<'static>> {
+fn highlight_mentions(text: &str, base_color: Color, mention_color: Color) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     let len = chars.len();
     let mut spans = Vec::new();
@@ -53,7 +52,7 @@ fn highlight_mentions(text: &str, base_color: Color) -> Vec<Span<'static>> {
             let mention: String = chars[start..i].iter().collect();
             spans.push(Span::styled(
                 mention,
-                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+                Style::default().fg(mention_color).add_modifier(Modifier::BOLD),
             ));
         } else {
             let start = i;
@@ -69,7 +68,7 @@ fn highlight_mentions(text: &str, base_color: Color) -> Vec<Span<'static>> {
     spans
 }
 
-pub fn format_user_message(msg: &ChatMessage, color: Color) -> Vec<Line<'static>> {
+pub fn format_user_message(msg: &ChatMessage, color: Color, mention_color: Color) -> Vec<Line<'static>> {
     let timestamp = msg.timestamp.chars().take(5).collect::<String>();
     let ts_span = Span::styled(
         format!("[{}] ", timestamp),
@@ -85,7 +84,7 @@ pub fn format_user_message(msg: &ChatMessage, color: Color) -> Vec<Line<'static>
         .lines()
         .enumerate()
         .map(|(i, line)| {
-            let content_spans = highlight_mentions(line, color);
+            let content_spans = highlight_mentions(line, color, mention_color);
             if i == 0 {
                 let mut spans = vec![ts_span.clone(), user_span.clone()];
                 spans.extend(content_spans);
@@ -103,18 +102,18 @@ pub fn format_user_message(msg: &ChatMessage, color: Color) -> Vec<Line<'static>
     lines
 }
 
-pub fn format_system_message(msg: &ChatMessage) -> Vec<Line<'static>> {
+pub fn format_system_message(msg: &ChatMessage, color: Color) -> Vec<Line<'static>> {
     if msg.content.is_empty() {
         return vec![Line::from(Span::styled(
             "*** ***".to_string(),
-            Style::default().fg(CYAN),
+            Style::default().fg(color),
         ))];
     }
     msg.content
         .lines()
         .map(|line| {
             let text = format!("*** {} ***", line);
-            Line::from(Span::styled(text, Style::default().fg(CYAN)))
+            Line::from(Span::styled(text, Style::default().fg(color)))
         })
         .collect()
 }

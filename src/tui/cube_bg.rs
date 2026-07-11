@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::tui::types::AMBER;
+use crate::tui::types::THEMES;
 
 /// 8 corners of a unit cube centered on the origin.
 const VERTS: [[f64; 3]; 8] = [
@@ -33,7 +33,7 @@ impl SpinningCube {
         Self {
             scale: 6.0,
             // dim amber so it reads as "background", not foreground content
-            color: AMBER,
+            color: THEMES[0].primary,
         }
     }
 

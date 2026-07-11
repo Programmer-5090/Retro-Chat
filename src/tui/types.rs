@@ -4,12 +4,50 @@ use ratatui::style::Color;
 
 use crate::ChatMessage;
 
-pub const AMBER: Color = Color::Rgb(255, 176, 0);
-pub const ORANGE: Color = Color::Rgb(255, 120, 0);
-pub const CYAN: Color = Color::Cyan;
-pub const BLACK: Color = Color::Black;
-/// Green tint for messages you have read or the recipient has read.
-pub const READ: Color = Color::Rgb(80, 220, 130);
+#[derive(Debug, Clone, Copy)]
+pub struct Theme {
+    pub name: &'static str,
+    pub primary: Color,
+    pub secondary: Color,
+    pub accent: Color,
+    pub bg: Color,
+    pub success: Color,
+}
+
+pub const THEMES: &[Theme] = &[
+    Theme {
+        name: "Amber",
+        primary: Color::Rgb(255, 176, 0),
+        secondary: Color::Rgb(255, 120, 0),
+        accent: Color::Cyan,
+        bg: Color::Black,
+        success: Color::Rgb(80, 220, 130),
+    },
+    Theme {
+        name: "Matrix",
+        primary: Color::Rgb(0, 200, 0),
+        secondary: Color::Rgb(0, 160, 0),
+        accent: Color::Rgb(0, 255, 65),
+        bg: Color::Black,
+        success: Color::Rgb(100, 255, 100),
+    },
+    Theme {
+        name: "Synthwave",
+        primary: Color::Rgb(255, 50, 150),
+        secondary: Color::Rgb(200, 50, 120),
+        accent: Color::Rgb(0, 200, 255),
+        bg: Color::Rgb(10, 0, 20),
+        success: Color::Rgb(100, 255, 200),
+    },
+    Theme {
+        name: "Solarized",
+        primary: Color::Rgb(181, 137, 0),
+        secondary: Color::Rgb(203, 75, 22),
+        accent: Color::Rgb(42, 161, 152),
+        bg: Color::Rgb(0, 43, 54),
+        success: Color::Rgb(133, 153, 0),
+    },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPane {
