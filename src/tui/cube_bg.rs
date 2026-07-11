@@ -13,7 +13,7 @@ use crate::tui::types::THEMES;
 /// 8 corners of a unit cube centered on the origin.
 const VERTS: [[f64; 3]; 8] = [
     [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0],
-    [-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0],
+    [-1.0, -1.0,  1.0], [1.0, -1.0,  1.0], [1.0, 1.0,  1.0], [-1.0, 1.0,  1.0],
 ];
 
 /// Pairs of vertex indices that form the 12 edges of the cube.

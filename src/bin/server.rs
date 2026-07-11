@@ -3,16 +3,18 @@ use tokio::net::TcpListener;
 use chrono::Local;
 use redis::Commands;
 
-use retro_chat::{AppState, handle_connection, load_tls_config};
+use retro_chat::{ AppState, handle_connection, load_tls_config };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let bind_addr = std::env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8082".to_string());
-    let redis_url = std::env::var("REDIS_URL")
+    let redis_url = std::env
+        ::var("REDIS_URL")
         .unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
 
     let listener = TcpListener::bind(&bind_addr).await?;
-    let pool = sqlx::postgres::PgPoolOptions::new()
+    let pool = sqlx::postgres::PgPoolOptions
+        ::new()
         .max_connections(5)
         .connect(&std::env::var("DATABASE_URL")?).await?;
     let redis_client = redis::Client::open(redis_url.as_str())?;
@@ -21,10 +23,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     sqlx::migrate!().run(&pool).await?;
 
-    sqlx::query(
-        "INSERT INTO rooms (name, created_by) VALUES ('general', 'system') ON CONFLICT (name) DO NOTHING"
-    )
-    .execute(&pool).await?;
+    sqlx
+        ::query(
+            "INSERT INTO rooms (name, created_by) VALUES ('general', 'system') ON CONFLICT (name) DO NOTHING"
+        )
+        .execute(&pool).await?;
 
     let state = AppState::new(pool, redis_client);
 

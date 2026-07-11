@@ -124,7 +124,7 @@ impl UiAppState {
     fn room_message_count(&self) -> usize {
         self.messages
             .iter()
-            .filter(|m| m.room == self.current_room || m.room.is_empty())
+            .filter(|m| (m.room == self.current_room || m.room.is_empty()))
             .count()
     }
 
@@ -141,8 +141,7 @@ impl UiAppState {
     }
 
     pub fn clear_messages(&mut self) {
-        self.messages
-            .retain(|m| m.room != self.current_room && !m.room.is_empty());
+        self.messages.retain(|m| m.room != self.current_room && !m.room.is_empty());
         self.scroll_offset = 0;
     }
 

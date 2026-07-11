@@ -1,17 +1,19 @@
 use proptest::prelude::*;
 
-use super::types::{FocusPane, THEMES, UiAppState};
+use super::types::{ FocusPane, THEMES, UiAppState };
 use ratatui::style::Color;
-use super::render::{border_style, format_gradient_title, format_user_message, format_system_message};
+use super::render::{
+    border_style,
+    format_gradient_title,
+    format_user_message,
+    format_system_message,
+};
 
 use crate::ChatMessage;
 use crate::message::MessageType;
 
 fn arb_message_type() -> impl Strategy<Value = MessageType> {
-    prop_oneof![
-        Just(MessageType::UserMessage),
-        Just(MessageType::SystemNotification),
-    ]
+    prop_oneof![Just(MessageType::UserMessage), Just(MessageType::SystemNotification)]
 }
 
 prop_compose! {
@@ -26,11 +28,7 @@ prop_compose! {
 }
 
 fn arb_focus_pane() -> impl Strategy<Value = FocusPane> {
-    prop_oneof![
-        Just(FocusPane::Input),
-        Just(FocusPane::Messages),
-        Just(FocusPane::Sidebar),
-    ]
+    prop_oneof![Just(FocusPane::Input), Just(FocusPane::Messages), Just(FocusPane::Sidebar)]
 }
 
 fn arb_non_empty_room_name() -> impl Strategy<Value = String> {
@@ -190,21 +188,23 @@ fn test_mention_highlighting() {
         is_history: false,
     };
     let lines = format_user_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan, None);
-    let rendered: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+    let rendered: String = lines
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(rendered.contains("@bob"), "rendered should contain @bob");
     assert!(rendered.contains("hi "), "rendered should contain 'hi '");
     // Check that @bob span is actually styled cyan
     assert!(lines.len() == 1, "should have 1 line");
     let spans = &lines[0].spans;
-    let mention_spans: Vec<_> = spans.iter().filter(|s| s.content == "@bob").collect();
+    let mention_spans: Vec<_> = spans
+        .iter()
+        .filter(|s| s.content == "@bob")
+        .collect();
     assert!(!mention_spans.is_empty(), "should have a span with @bob content");
     for s in &mention_spans {
-        assert_eq!(
-            s.style.fg,
-            Some(Color::Cyan),
-            "@bob span should be cyan, got {:?}",
-            s.style.fg
-        );
+        assert_eq!(s.style.fg, Some(Color::Cyan), "@bob span should be cyan, got {:?}", s.style.fg);
         assert!(
             s.style.add_modifier.contains(ratatui::style::Modifier::BOLD),
             "@bob span should be bold"

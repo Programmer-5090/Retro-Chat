@@ -32,7 +32,12 @@ impl AppState {
     /// to a room the user isn't currently *viewing* still reach their
     /// client so the unread badge/dimmed-color logic has something to react
     /// to. Idempotent: re-subscribing just refreshes the sender handle.
-    pub async fn subscribe_room(&self, username: &str, room: &str, tx: mpsc::UnboundedSender<String>) {
+    pub async fn subscribe_room(
+        &self,
+        username: &str,
+        room: &str,
+        tx: mpsc::UnboundedSender<String>
+    ) {
         let mut rooms = self.rooms.write().await;
         let members = rooms.entry(room.to_string()).or_default();
         members.retain(|(name, _)| name != username);
@@ -74,8 +79,14 @@ impl AppState {
 
     pub async fn get_room_users(&self, room: &str) -> Vec<String> {
         let rooms = self.rooms.read().await;
-        rooms.get(room)
-            .map(|members| members.iter().map(|(name, _)| name.clone()).collect())
+        rooms
+            .get(room)
+            .map(|members|
+                members
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            )
             .unwrap_or_default()
     }
 
@@ -94,7 +105,8 @@ impl AppState {
             return cache.1.clone();
         }
         let mut conn = self.redis_client.get_connection().unwrap();
-        let keys: Vec<String> = redis::cmd("KEYS")
+        let keys: Vec<String> = redis
+            ::cmd("KEYS")
             .arg("presence:*")
             .query(&mut conn)
             .unwrap_or_default();
@@ -165,24 +177,22 @@ impl AppState {
         )
             .bind(room_id)
             .bind(username)
-            .execute(&self.pool)
-            .await
+            .execute(&self.pool).await
             .ok();
     }
 
     pub async fn remove_room_membership(&self, username: &str, room: &str) {
-        let room_id: Option<i32> = sqlx::query_scalar("SELECT id FROM rooms WHERE name = $1")
+        let room_id: Option<i32> = sqlx
+            ::query_scalar("SELECT id FROM rooms WHERE name = $1")
             .bind(room)
-            .fetch_optional(&self.pool)
-            .await
+            .fetch_optional(&self.pool).await
             .ok()
             .flatten();
         if let Some(id) = room_id {
             sqlx::query("DELETE FROM room_members WHERE room_id = $1 AND username = $2")
                 .bind(id)
                 .bind(username)
-                .execute(&self.pool)
-                .await
+                .execute(&self.pool).await
                 .ok();
         }
     }
@@ -192,8 +202,7 @@ impl AppState {
             "SELECT r.name FROM room_members rm JOIN rooms r ON rm.room_id = r.id WHERE rm.username = $1 ORDER BY rm.last_joined_at DESC"
         )
             .bind(username)
-            .fetch_all(&self.pool)
-            .await
+            .fetch_all(&self.pool).await
             .unwrap_or_default()
     }
 
@@ -202,8 +211,7 @@ impl AppState {
             "SELECT r.name FROM room_members rm JOIN rooms r ON rm.room_id = r.id WHERE rm.username = $1 ORDER BY rm.last_joined_at DESC LIMIT 1"
         )
             .bind(username)
-            .fetch_optional(&self.pool)
-            .await
+            .fetch_optional(&self.pool).await
             .ok()
             .flatten()
     }

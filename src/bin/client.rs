@@ -1,8 +1,5 @@
 use std::{ env, error::Error, io::{ self, Write } };
-use tokio::{
-    io::{ AsyncBufReadExt, AsyncWriteExt, BufReader },
-    net::TcpStream,
-};
+use tokio::{ io::{ AsyncBufReadExt, AsyncWriteExt, BufReader }, net::TcpStream };
 use crossterm::terminal::disable_raw_mode;
 
 use retro_chat::client_helpers::{ ClientStream, create_tls_connector };
@@ -47,7 +44,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         let msg = match serde_json::from_str::<ChatMessage>(buf.trim()) {
             Ok(m) => m,
-            Err(_) => continue,
+            Err(_) => {
+                continue;
+            }
         };
         if msg.username != "Server" {
             continue;

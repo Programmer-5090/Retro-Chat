@@ -1,8 +1,5 @@
-use std::{io, pin::Pin, sync::Arc, task::{Context, Poll}};
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::TcpStream,
-};
+use std::{ io, pin::Pin, sync::Arc, task::{ Context, Poll } };
+use tokio::{ io::{ AsyncRead, AsyncWrite, ReadBuf }, net::TcpStream };
 
 pub enum ClientStream {
     Plain(TcpStream),

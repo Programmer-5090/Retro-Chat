@@ -1,42 +1,39 @@
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{ collections::{ HashMap, HashSet, VecDeque }, sync::Arc, time::{ Duration, Instant } };
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
+    event::{ self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{ EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode },
 };
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
-    prelude::{CrosstermBackend, Terminal},
-    style::{Color, Style},
+    layout::{ Constraint, Layout, Rect },
+    prelude::{ CrosstermBackend, Terminal },
+    style::{ Color, Style },
     symbols::border,
-    widgets::{Block, Borders, Paragraph, Sparkline, Wrap},
+    widgets::{ Block, Borders, Paragraph, Sparkline, Wrap },
 };
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    sync::{Mutex, mpsc},
-};
+use tokio::{ io::{ AsyncBufReadExt, AsyncWriteExt, BufReader }, sync::{ Mutex, mpsc } };
 use tui_textarea::TextArea;
 
 use crate::client_helpers::ClientStream;
 use crate::message::MessageType;
 use crate::ChatMessage;
 
-    use super::render::{
-        border_style, format_gradient_title, format_system_message,
-        format_user_message, make_system_msg, username_color,
-    };
-use super::types::{FocusPane, Theme, THEMES};
+use super::render::{
+    border_style,
+    format_gradient_title,
+    format_system_message,
+    format_user_message,
+    make_system_msg,
+    username_color,
+};
+use super::types::{ FocusPane, Theme, THEMES };
 
 pub async fn run_chat_ui(
     username: String,
     reader: BufReader<tokio::io::ReadHalf<ClientStream>>,
-    writer: tokio::io::WriteHalf<ClientStream>,
+    writer: tokio::io::WriteHalf<ClientStream>
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (server_tx, server_rx) = mpsc::unbounded_channel::<String>();
     let mut app = App::new(username, writer, server_rx);
@@ -84,7 +81,7 @@ impl App {
     fn new(
         username: String,
         writer: tokio::io::WriteHalf<ClientStream>,
-        server_rx: mpsc::UnboundedReceiver<String>,
+        server_rx: mpsc::UnboundedReceiver<String>
     ) -> Self {
         let default_theme = &THEMES[0];
         let mut ta = TextArea::default();
@@ -121,7 +118,7 @@ impl App {
     async fn run(
         &mut self,
         reader: BufReader<tokio::io::ReadHalf<ClientStream>>,
-        server_tx: mpsc::UnboundedSender<String>,
+        server_tx: mpsc::UnboundedSender<String>
     ) -> Result<(), Box<dyn std::error::Error>> {
         enable_raw_mode()?;
         let _guard = CleanGuard;
@@ -142,7 +139,9 @@ impl App {
                         let _ = server_tx.send("__CONN_CLOSED__".to_string());
                         break;
                     }
-                    Err(_) => break,
+                    Err(_) => {
+                        break;
+                    }
                 }
             }
         });
@@ -154,7 +153,7 @@ impl App {
 
     async fn event_loop(
         &mut self,
-        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut last_sparkline_tick = Instant::now();
         loop {
@@ -164,7 +163,10 @@ impl App {
             let now = Instant::now();
             if now - last_sparkline_tick >= Duration::from_secs(1) {
                 let cutoff = now - Duration::from_secs(2);
-                let count = self.message_times.iter().filter(|t| **t > cutoff).count() as u16;
+                let count = self.message_times
+                    .iter()
+                    .filter(|t| **t > cutoff)
+                    .count() as u16;
                 self.sparkline_data.push_back(count);
                 self.sparkline_data.pop_front();
                 last_sparkline_tick = now;
@@ -175,13 +177,15 @@ impl App {
             let since_keypress = now - self.last_keypress;
             let since_typing_sent = now - self.last_typing_sent;
             let input_text = self.textarea.lines().first().cloned().unwrap_or_default();
-            if self.focus == FocusPane::Input
-                && since_keypress < Duration::from_secs(2)
-                && since_typing_sent > Duration::from_secs(3)
+            if
+                self.focus == FocusPane::Input &&
+                since_keypress < Duration::from_secs(2) &&
+                since_typing_sent > Duration::from_secs(3)
             {
                 let wire = if input_text.starts_with('/') {
                     // Only send typing for /dm composition, not other commands
-                    input_text.strip_prefix("/dm ")
+                    input_text
+                        .strip_prefix("/dm ")
                         .and_then(|s| s.split_whitespace().next())
                         .filter(|t| !t.is_empty())
                         .map(|target| {
@@ -208,10 +212,12 @@ impl App {
                     }
                 }
             }
-                loop {
+            loop {
                 match self.server_rx.try_recv() {
                     Ok(line) => self.handle_server_message(&line).await,
-                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        break;
+                    }
                     Err(mpsc::error::TryRecvError::Disconnected) => {
                         self.ingest_msg(make_system_msg("Internal channel error"), true);
                         self.should_quit = true;
@@ -267,10 +273,10 @@ impl App {
         self.messages
             .iter()
             .filter(|(msg, was_unread)| {
-                *was_unread
-                    && msg.username != self.username
-                    && !msg.id.is_empty()
-                    && (msg.room == room || (msg.room.is_empty() && room == self.current_room))
+                *was_unread &&
+                    msg.username != self.username &&
+                    !msg.id.is_empty() &&
+                    (msg.room == room || (msg.room.is_empty() && room == self.current_room))
             })
             .map(|(msg, _)| msg.id.clone())
             .collect()
@@ -296,20 +302,24 @@ impl App {
     }
 
     fn messages_for_room(&self, room: &str) -> impl Iterator<Item = &(ChatMessage, bool)> {
-        self.messages.iter().filter(move |(msg, _)| {
-            msg.room == room || (msg.room.is_empty() && room == self.current_room)
-        })
+        self.messages
+            .iter()
+            .filter(move |(msg, _)| {
+                msg.room == room || (msg.room.is_empty() && room == self.current_room)
+            })
     }
 
     fn room_message_count(&self, room: &str) -> usize {
         self.messages
             .iter()
-            .filter(|(msg, _)| msg.room == room || (msg.room.is_empty() && room == self.current_room))
+            .filter(
+                |(msg, _)| (msg.room == room || (msg.room.is_empty() && room == self.current_room))
+            )
             .count()
     }
 
     async fn handle_key(&mut self, key: event::KeyEvent) {
-        use crossterm::event::{KeyCode, KeyModifiers};
+        use crossterm::event::{ KeyCode, KeyModifiers };
 
         match key.code {
             KeyCode::Esc => {
@@ -331,9 +341,7 @@ impl App {
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.theme_idx = (self.theme_idx + 1) % THEMES.len();
                 self.theme = THEMES[self.theme_idx];
-                self.textarea.set_style(
-                    Style::default().fg(self.theme.primary).bg(self.theme.bg),
-                );
+                self.textarea.set_style(Style::default().fg(self.theme.primary).bg(self.theme.bg));
                 self.textarea.set_cursor_style(Style::default().bg(self.theme.primary));
                 return;
             }
@@ -341,46 +349,47 @@ impl App {
         }
 
         match self.focus {
-            FocusPane::Input => match key.code {
-                KeyCode::Enter => {
-                    let text = self.textarea.lines().first().cloned().unwrap_or_default();
-                    self.textarea.select_all();
-                    self.textarea.cut();
-                    self.last_keypress = Instant::now();
-                    self.send_or_command(text).await;
-                }
-                KeyCode::Char(_) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let current_len = self
-                        .textarea
-                        .lines()
-                        .first()
-                        .map(|l| l.len())
-                        .unwrap_or(0);
-                    if current_len < 500 {
-                        self.textarea.input(key);
+            FocusPane::Input =>
+                match key.code {
+                    KeyCode::Enter => {
+                        let text = self.textarea.lines().first().cloned().unwrap_or_default();
+                        self.textarea.select_all();
+                        self.textarea.cut();
                         self.last_keypress = Instant::now();
+                        self.send_or_command(text).await;
                     }
+                    KeyCode::Char(_) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        let current_len = self.textarea
+                            .lines()
+                            .first()
+                            .map(|l| l.len())
+                            .unwrap_or(0);
+                        if current_len < 500 {
+                            self.textarea.input(key);
+                            self.last_keypress = Instant::now();
+                        }
+                    }
+                    | KeyCode::Backspace
+                    | KeyCode::Delete
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Home
+                    | KeyCode::End => {
+                        self.textarea.input(key);
+                    }
+                    _ => {}
                 }
-                | KeyCode::Backspace
-                | KeyCode::Delete
-                | KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Home
-                | KeyCode::End => {
-                    self.textarea.input(key);
+            FocusPane::Messages =>
+                match key.code {
+                    KeyCode::Up => {
+                        let visible = 20;
+                        self.scroll_up(visible);
+                    }
+                    KeyCode::Down => {
+                        self.scroll_down();
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
-            FocusPane::Messages => match key.code {
-                KeyCode::Up => {
-                    let visible = 20;
-                    self.scroll_up(visible);
-                }
-                KeyCode::Down => {
-                    self.scroll_down();
-                }
-                _ => {}
-            },
             FocusPane::Sidebar => {
                 let max = self.rooms.len().saturating_sub(1);
                 match key.code {
@@ -417,14 +426,15 @@ impl App {
                              /dm <user> <msg> \u{2014} direct message\n\
                              /clear          \u{2014} clear messages\n\
                              /help           \u{2014} show this help\n\
-                             /quit           \u{2014} quit",
+                             /quit           \u{2014} quit"
                         ),
-                        true,
+                        true
                     );
                 }
                 "/clear" => {
-                    self.messages
-                        .retain(|(msg, _)| msg.room != self.current_room && !msg.room.is_empty());
+                    self.messages.retain(
+                        |(msg, _)| msg.room != self.current_room && !msg.room.is_empty()
+                    );
                     self.scroll_offset = 0;
                 }
                 "/quit" => {
@@ -436,9 +446,9 @@ impl App {
                     if room.is_empty() || room.len() > 32 || room.contains(char::is_whitespace) {
                         self.ingest_msg(
                             make_system_msg(
-                                "Usage: /join <room>  (1\u{2013}32 non-whitespace chars)",
+                                "Usage: /join <room>  (1\u{2013}32 non-whitespace chars)"
                             ),
-                            true,
+                            true
                         );
                     } else {
                         if !self.rooms.iter().any(|r| r == room) {
@@ -509,8 +519,7 @@ impl App {
         if let Ok(msg) = serde_json::from_str::<ChatMessage>(line) {
             match msg.message_type {
                 MessageType::RoomList => {
-                    self.rooms = msg
-                        .content
+                    self.rooms = msg.content
                         .split(',')
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
@@ -523,7 +532,10 @@ impl App {
                     }
                 }
                 MessageType::ReadReceipt => {
-                    for id in msg.content.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    for id in msg.content
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty()) {
                         self.read_message_ids.insert(id.to_string());
                     }
                 }
@@ -531,8 +543,7 @@ impl App {
                     let is_current_room = msg.room.is_empty() || msg.room == self.current_room;
                     let room = msg.room.clone();
                     let is_history = msg.is_history;
-                    let ack_id = if is_current_room && !is_history && msg.username != self.username
-                    {
+                    let ack_id = if is_current_room && !is_history && msg.username != self.username {
                         msg.id.clone()
                     } else {
                         String::new()
@@ -551,12 +562,19 @@ impl App {
                 }
                 MessageType::TypingNotification => {
                     if msg.username != self.username {
-                        let room = if msg.room.is_empty() { self.current_room.clone() } else { msg.room.clone() };
+                        let room = if msg.room.is_empty() {
+                            self.current_room.clone()
+                        } else {
+                            msg.room.clone()
+                        };
                         self.typing_users.insert(msg.username.clone(), (room, Instant::now()));
                     }
                 }
                 MessageType::PresenceSync => {
-                    for u in msg.content.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                    for u in msg.content
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty()) {
                         self.online_users.insert(u.to_string());
                     }
                 }
@@ -622,8 +640,7 @@ impl App {
     }
 
     fn render_sidebar(&mut self, f: &mut Frame, area: Rect) {
-        let lines: Vec<ratatui::text::Line> = self
-            .rooms
+        let lines: Vec<ratatui::text::Line> = self.rooms
             .iter()
             .map(|room| {
                 let has_unread = self.unread_rooms.contains(room);
@@ -633,7 +650,9 @@ impl App {
                 let style = if active {
                     Style::default().fg(self.theme.accent)
                 } else if has_unread {
-                    Style::default().fg(self.theme.accent).add_modifier(ratatui::style::Modifier::BOLD)
+                    Style::default()
+                        .fg(self.theme.accent)
+                        .add_modifier(ratatui::style::Modifier::BOLD)
                 } else {
                     Style::default().fg(self.theme.primary)
                 };
@@ -648,7 +667,9 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .border_style(border_style(FocusPane::Sidebar, self.focus, self.pulse_tick, &self.theme))
+            .border_style(
+                border_style(FocusPane::Sidebar, self.focus, self.pulse_tick, &self.theme)
+            )
             .title(" Rooms ");
 
         let paragraph = Paragraph::new(lines)
@@ -660,26 +681,31 @@ impl App {
     fn render_messages(&self, f: &mut Frame, area: Rect) {
         let lines: Vec<ratatui::text::Line> = self
             .messages_for_room(&self.current_room)
-            .flat_map(|(msg, _)| match msg.message_type {
-                MessageType::UserMessage => {
-                    let color = if msg.username == self.username {
-                        if self.read_message_ids.contains(&msg.id) {
-                            self.theme.success
+            .flat_map(|(msg, _)| {
+                match msg.message_type {
+                    MessageType::UserMessage => {
+                        let color = if msg.username == self.username {
+                            if self.read_message_ids.contains(&msg.id) {
+                                self.theme.success
+                            } else {
+                                self.theme.primary
+                            }
                         } else {
-                            self.theme.primary
-                        }
-                    } else {
-                        self.theme.secondary
-                    };
-                    let dot_color = (msg.username != self.username && self.online_users.contains(&msg.username))
-                        .then(|| username_color(&msg.username));
-                    format_user_message(msg, color, self.theme.accent, dot_color)
+                            self.theme.secondary
+                        };
+                        let dot_color = (
+                            msg.username != self.username &&
+                            self.online_users.contains(&msg.username)
+                        ).then(|| username_color(&msg.username));
+                        format_user_message(msg, color, self.theme.accent, dot_color)
+                    }
+                    MessageType::SystemNotification =>
+                        format_system_message(msg, self.theme.accent),
+                    MessageType::RoomList => unreachable!(),
+                    MessageType::ReadReceipt => unreachable!(),
+                    MessageType::PresenceSync => unreachable!(),
+                    MessageType::TypingNotification => unreachable!(),
                 }
-                MessageType::SystemNotification => format_system_message(msg, self.theme.accent),
-                MessageType::RoomList => unreachable!(),
-                MessageType::ReadReceipt => unreachable!(),
-                MessageType::PresenceSync => unreachable!(),
-                MessageType::TypingNotification => unreachable!(),
             })
             .collect();
 
@@ -695,7 +721,9 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .border_style(border_style(FocusPane::Messages, self.focus, self.pulse_tick, &self.theme))
+            .border_style(
+                border_style(FocusPane::Messages, self.focus, self.pulse_tick, &self.theme)
+            )
             .title(" Messages ");
 
         let paragraph = Paragraph::new(lines)
@@ -715,28 +743,32 @@ impl App {
             Block::default()
                 .borders(Borders::ALL)
                 .border_set(border::ROUNDED)
-                .border_style(border_style(FocusPane::Input, self.focus, self.pulse_tick, &self.theme))
-                .title(" Message "),
+                .border_style(
+                    border_style(FocusPane::Input, self.focus, self.pulse_tick, &self.theme)
+                )
+                .title(" Message ")
         );
         f.render_widget(&self.textarea, area);
     }
 
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
-        let spark_data: Vec<u64> = self.sparkline_data.iter().map(|v| *v as u64).collect();
+        let spark_data: Vec<u64> = self.sparkline_data
+            .iter()
+            .map(|v| *v as u64)
+            .collect();
         let spark = Sparkline::default()
             .data(&spark_data)
             .style(Style::default().fg(self.theme.primary).bg(self.theme.bg));
         let spark_area = Rect {
             x: area.x + area.width.saturating_sub(41),
             y: area.y,
-            width: 40.min(area.width.saturating_sub(1)),
+            width: (40).min(area.width.saturating_sub(1)),
             height: 1,
         };
         let unread_str = if self.unread_rooms.is_empty() {
             String::new()
         } else {
-            let names: Vec<&str> = self
-                .unread_rooms
+            let names: Vec<&str> = self.unread_rooms
                 .iter()
                 .filter(|r| *r != &self.current_room)
                 .map(|s| s.as_str())
@@ -748,8 +780,9 @@ impl App {
             }
         };
         let typing_text = {
-            let names: Vec<&str> = self.typing_users.iter()
-                .filter(|(_, (r, _))| r == &self.current_room || r.starts_with("__dm__"))
+            let names: Vec<&str> = self.typing_users
+                .iter()
+                .filter(|(_, (r, _))| (r == &self.current_room || r.starts_with("__dm__")))
                 .map(|(u, _)| u.as_str())
                 .collect();
             if names.is_empty() {
@@ -784,8 +817,9 @@ impl App {
         let area = f.area();
 
         if area.width < 17 || area.height < 6 {
-            let msg = Paragraph::new("Terminal too small \u{2014} please resize")
-            .style(Style::default().fg(self.theme.primary).bg(self.theme.bg));
+            let msg = Paragraph::new("Terminal too small \u{2014} please resize").style(
+                Style::default().fg(self.theme.primary).bg(self.theme.bg)
+            );
             f.render_widget(msg, area);
             return;
         }

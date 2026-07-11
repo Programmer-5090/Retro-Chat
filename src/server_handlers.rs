@@ -1,18 +1,22 @@
 use std::sync::Arc;
 use std::net::SocketAddr;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
-    sync::mpsc,
-};
+use tokio::{ io::{ AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader }, sync::mpsc };
 use chrono::Local;
 use redis::Commands;
 use argon2::{
-    password_hash::{SaltString, PasswordHash, PasswordHasher, PasswordVerifier},
+    password_hash::{ SaltString, PasswordHash, PasswordHasher, PasswordVerifier },
     Argon2,
 };
 use rand::Rng;
 
-use crate::{ChatMessage, MessageType, build_notice, build_read_receipt, generate_message_id, AppState};
+use crate::{
+    ChatMessage,
+    MessageType,
+    build_notice,
+    build_read_receipt,
+    generate_message_id,
+    AppState,
+};
 
 async fn send_notice(writer: &mut (impl AsyncWrite + Unpin), text: &str) {
     let notice = build_notice(text);
@@ -21,16 +25,13 @@ async fn send_notice(writer: &mut (impl AsyncWrite + Unpin), text: &str) {
 
 fn validate_username(username: &str) -> bool {
     let len = username.len();
-    len >= 3
-        && len <= 32
-        && username.chars().all(|c| c.is_alphanumeric() || c == '_')
+    len >= 3 && len <= 32 && username.chars().all(|c| (c.is_alphanumeric() || c == '_'))
 }
 
 async fn check_banned(state: &AppState, username: &str) -> bool {
     sqlx::query_scalar::<_, i32>("SELECT 1 FROM bans WHERE username = $1")
         .bind(username)
-        .fetch_optional(&state.pool)
-        .await
+        .fetch_optional(&state.pool).await
         .unwrap()
         .is_some()
 }
@@ -40,7 +41,7 @@ async fn authenticate_user(
     writer: &mut (impl AsyncWrite + Unpin),
     state: &AppState,
     redis_conn: &mut redis::Connection,
-    username: &str,
+    username: &str
 ) -> bool {
     let mut authenticated = false;
     let mut line = String::new();
@@ -58,7 +59,8 @@ async fn authenticate_user(
                 continue;
             }
             let is_first: bool =
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
+                sqlx
+                    ::query_scalar::<_, i64>("SELECT COUNT(*) FROM users")
                     .fetch_one(&state.pool).await
                     .unwrap_or(0) == 0;
             let role = if is_first { "admin" } else { "user" };
@@ -67,14 +69,17 @@ async fn authenticate_user(
                 .hash_password(password.as_bytes(), &salt)
                 .unwrap()
                 .to_string();
-            match sqlx::query("INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3)")
-                .bind(username)
-                .bind(&hash)
-                .bind(role)
-                .execute(&state.pool).await
+            match
+                sqlx
+                    ::query("INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3)")
+                    .bind(username)
+                    .bind(&hash)
+                    .bind(role)
+                    .execute(&state.pool).await
             {
                 Ok(_) => {
-                    let token: String = rand::thread_rng()
+                    let token: String = rand
+                        ::thread_rng()
                         .sample_iter(&rand::distributions::Alphanumeric)
                         .take(32)
                         .map(char::from)
@@ -82,7 +87,10 @@ async fn authenticate_user(
                     let _: () = redis_conn
                         .set_ex(format!("session:{}", token), username, 86400)
                         .unwrap();
-                    send_notice(writer, &format!("Registered and logged in. Token: {}", token)).await;
+                    send_notice(
+                        writer,
+                        &format!("Registered and logged in. Token: {}", token)
+                    ).await;
                     authenticated = true;
                 }
                 Err(_) => send_notice(writer, "Username already taken.").await,
@@ -96,20 +104,26 @@ async fn authenticate_user(
             let attempts: i32 = redis_conn.get(&attempts_key).unwrap_or(0);
             if attempts >= 3 {
                 let ttl: i64 = redis_conn.ttl(&attempts_key).unwrap_or(60);
-                send_notice(writer, &format!("Too many failed attempts. Try again in {} seconds.", ttl)).await;
+                send_notice(
+                    writer,
+                    &format!("Too many failed attempts. Try again in {} seconds.", ttl)
+                ).await;
                 continue;
             }
-            match sqlx::query_scalar::<_, String>(
-                "SELECT password_hash FROM users WHERE username = $1"
-            )
-                .bind(username)
-                .fetch_optional(&state.pool).await
+            match
+                sqlx
+                    ::query_scalar::<_, String>(
+                        "SELECT password_hash FROM users WHERE username = $1"
+                    )
+                    .bind(username)
+                    .fetch_optional(&state.pool).await
             {
                 Ok(Some(stored_hash)) => {
                     let parsed = PasswordHash::new(&stored_hash).unwrap();
                     if Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok() {
                         let _: Result<(), _> = redis_conn.del(&attempts_key);
-                        let token: String = rand::thread_rng()
+                        let token: String = rand
+                            ::thread_rng()
                             .sample_iter(&rand::distributions::Alphanumeric)
                             .take(32)
                             .map(char::from)
@@ -124,7 +138,10 @@ async fn authenticate_user(
                         if count == 1 {
                             let _: () = redis_conn.expire(&attempts_key, 60).unwrap();
                         }
-                        send_notice(writer, &format!("Wrong password. ({}/3 attempts)", count)).await;
+                        send_notice(
+                            writer,
+                            &format!("Wrong password. ({}/3 attempts)", count)
+                        ).await;
                     }
                 }
                 Ok(None) => send_notice(writer, "User not found. Use /register first.").await,
@@ -134,7 +151,10 @@ async fn authenticate_user(
                 }
             }
         } else {
-            send_notice(writer, "Authenticate first: /register <password> or /login <password>").await;
+            send_notice(
+                writer,
+                "Authenticate first: /register <password> or /login <password>"
+            ).await;
         }
     }
     true
@@ -164,7 +184,7 @@ async fn handle_leave_command(
     state: &AppState,
     writer: &mut (impl AsyncWrite + Unpin),
     username: &str,
-    out_tx: &mpsc::UnboundedSender<String>,
+    out_tx: &mpsc::UnboundedSender<String>
 ) {
     let current_room = state.get_user_room(username).await;
     if current_room == "general" {
@@ -187,8 +207,7 @@ async fn handle_leave_command(
     let leave_json = serde_json::to_string(&leave_notice).unwrap();
     state.send_to_room(&current_room, &leave_json).await;
 
-    let fallback = state.get_last_room(username).await
-        .unwrap_or_else(|| "general".to_string());
+    let fallback = state.get_last_room(username).await.unwrap_or_else(|| "general".to_string());
     state.subscribe_room(username, &fallback, out_tx.clone()).await;
     state.set_active_room(username, &fallback).await;
     send_notice(writer, &format!("Left '{}'. Now in '{}'.", current_room, fallback)).await;
@@ -198,13 +217,13 @@ async fn handle_leave_command(
 
 async fn replay_history(state: &AppState, room_name: &str, out_tx: &mpsc::UnboundedSender<String>) {
     let room_id: i32 = state.get_or_create_db_room(room_name, "system").await;
-    let rows = sqlx::query_as::<_, (String, String, chrono::DateTime<chrono::Utc>, String)>(
-        "SELECT username, content, created_at, message_type FROM messages WHERE room_id = $1 ORDER BY created_at DESC LIMIT 50"
-    )
-    .bind(room_id)
-    .fetch_all(&state.pool)
-    .await
-    .unwrap();
+    let rows = sqlx
+        ::query_as::<_, (String, String, chrono::DateTime<chrono::Utc>, String)>(
+            "SELECT username, content, created_at, message_type FROM messages WHERE room_id = $1 ORDER BY created_at DESC LIMIT 50"
+        )
+        .bind(room_id)
+        .fetch_all(&state.pool).await
+        .unwrap();
 
     for row in rows.into_iter().rev() {
         let msg = ChatMessage {
@@ -229,11 +248,18 @@ async fn handle_join_command(
     writer: &mut (impl AsyncWrite + Unpin),
     username: &str,
     out_tx: &mpsc::UnboundedSender<String>,
-    input: &str,
+    input: &str
 ) {
     let room_name = input.trim();
-    if room_name.is_empty() || room_name.len() > 32 || !room_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-        send_notice(writer, "Invalid room name. Use 1-32 chars (letters, numbers, underscores, hyphens).").await;
+    if
+        room_name.is_empty() ||
+        room_name.len() > 32 ||
+        !room_name.chars().all(|c| (c.is_alphanumeric() || c == '_' || c == '-'))
+    {
+        send_notice(
+            writer,
+            "Invalid room name. Use 1-32 chars (letters, numbers, underscores, hyphens)."
+        ).await;
         return;
     }
     let old_room = state.get_user_room(username).await;
@@ -269,7 +295,7 @@ async fn handle_msg_command(
     writer: &mut (impl AsyncWrite + Unpin),
     username: &str,
     out_tx: &mpsc::UnboundedSender<String>,
-    input: &str,
+    input: &str
 ) {
     let parts: Vec<&str> = input.splitn(2, ' ').collect();
     if parts.len() < 2 {
@@ -288,10 +314,10 @@ async fn handle_msg_command(
         return;
     }
 
-    let target_exists: bool = sqlx::query_scalar::<_, i32>("SELECT 1 FROM users WHERE username = $1")
+    let target_exists: bool = sqlx
+        ::query_scalar::<_, i32>("SELECT 1 FROM users WHERE username = $1")
         .bind(target)
-        .fetch_optional(&state.pool)
-        .await
+        .fetch_optional(&state.pool).await
         .unwrap()
         .is_some();
 
@@ -323,13 +349,14 @@ async fn handle_msg_command(
     };
     let dm_json = serde_json::to_string(&dm_msg).unwrap();
 
-    sqlx::query("INSERT INTO messages (username, content, message_type, room_id) VALUES ($1, $2, $3, $4)")
+    sqlx::query(
+        "INSERT INTO messages (username, content, message_type, room_id) VALUES ($1, $2, $3, $4)"
+    )
         .bind(&dm_msg.username)
         .bind(&dm_msg.content)
-        .bind((dm_msg.message_type).to_string())
+        .bind(dm_msg.message_type.to_string())
         .bind(room_id)
-        .execute(&state.pool)
-        .await
+        .execute(&state.pool).await
         .unwrap();
 
     state.save_room_membership(target, &dm_room).await;
@@ -340,7 +367,9 @@ async fn handle_msg_command(
         // sidebar, further replies here show up (and flag unread) without
         // them having to reconnect first.
         state.subscribe_room(target, &dm_room, target_tx.clone()).await;
-        let whisper = build_notice(&format!("DM from {}: '{}'. Check your sidebar to join.", username, dm_text));
+        let whisper = build_notice(
+            &format!("DM from {}: '{}'. Check your sidebar to join.", username, dm_text)
+        );
         let _ = target_tx.send(whisper);
         send_room_list(state, target, &target_tx).await;
     }
@@ -354,7 +383,7 @@ async fn handle_mute_command(
     redis_conn: &mut redis::Connection,
     username: &str,
     user_role: &str,
-    input: &str,
+    input: &str
 ) {
     if user_role != "admin" {
         send_notice(writer, "Only admins can use /mute.").await;
@@ -369,12 +398,13 @@ async fn handle_mute_command(
     let minutes: u64 = parts[1].trim().parse().unwrap_or(5);
     let _: Result<(), _> = redis_conn.set_ex(format!("muted:{}", target_user), "1", minutes * 60);
     send_notice(writer, &format!("Muted {} for {} minutes.", target_user, minutes)).await;
-    sqlx::query("INSERT INTO audit_log (actor, action, target, details) VALUES ($1, 'mute', $2, $3)")
+    sqlx::query(
+        "INSERT INTO audit_log (actor, action, target, details) VALUES ($1, 'mute', $2, $3)"
+    )
         .bind(username)
         .bind(target_user)
         .bind(format!("{} minutes", minutes))
-        .execute(&state.pool)
-        .await
+        .execute(&state.pool).await
         .unwrap();
 }
 
@@ -384,7 +414,7 @@ async fn handle_unmute_command(
     redis_conn: &mut redis::Connection,
     username: &str,
     user_role: &str,
-    input: &str,
+    input: &str
 ) {
     if user_role != "admin" {
         send_notice(writer, "Only admins can use /unmute.").await;
@@ -396,8 +426,7 @@ async fn handle_unmute_command(
     sqlx::query("INSERT INTO audit_log (actor, action, target) VALUES ($1, 'unmute', $2)")
         .bind(username)
         .bind(target_user)
-        .execute(&state.pool)
-        .await
+        .execute(&state.pool).await
         .unwrap();
 }
 
@@ -406,7 +435,7 @@ async fn handle_ban_command(
     writer: &mut (impl AsyncWrite + Unpin),
     username: &str,
     user_role: &str,
-    input: &str,
+    input: &str
 ) {
     if user_role != "admin" {
         send_notice(writer, "Only admins can use /ban.").await;
@@ -415,21 +444,23 @@ async fn handle_ban_command(
     let parts: Vec<&str> = input.splitn(2, ' ').collect();
     let target_user = parts[0].trim();
     let reason = if parts.len() > 1 { parts[1].trim() } else { "No reason" };
-    match sqlx::query("INSERT INTO bans (username, banned_by, reason) VALUES ($1, $2, $3)")
-        .bind(target_user)
-        .bind(username)
-        .bind(reason)
-        .execute(&state.pool)
-        .await
+    match
+        sqlx
+            ::query("INSERT INTO bans (username, banned_by, reason) VALUES ($1, $2, $3)")
+            .bind(target_user)
+            .bind(username)
+            .bind(reason)
+            .execute(&state.pool).await
     {
         Ok(_) => {
             send_notice(writer, &format!("Banned {} (reason: {}).", target_user, reason)).await;
-            sqlx::query("INSERT INTO audit_log (actor, action, target, details) VALUES ($1, 'ban', $2, $3)")
+            sqlx::query(
+                "INSERT INTO audit_log (actor, action, target, details) VALUES ($1, 'ban', $2, $3)"
+            )
                 .bind(username)
                 .bind(target_user)
                 .bind(reason)
-                .execute(&state.pool)
-                .await
+                .execute(&state.pool).await
                 .unwrap();
         }
         Err(_) => send_notice(writer, &format!("User '{}' is not registered.", target_user)).await,
@@ -441,7 +472,7 @@ async fn handle_unban_command(
     writer: &mut (impl AsyncWrite + Unpin),
     username: &str,
     user_role: &str,
-    input: &str,
+    input: &str
 ) {
     if user_role != "admin" {
         send_notice(writer, "Only admins can use /unban.").await;
@@ -450,15 +481,13 @@ async fn handle_unban_command(
     let target_user = input.trim();
     sqlx::query("DELETE FROM bans WHERE username = $1")
         .bind(target_user)
-        .execute(&state.pool)
-        .await
+        .execute(&state.pool).await
         .unwrap();
     send_notice(writer, &format!("Unbanned {}.", target_user)).await;
     sqlx::query("INSERT INTO audit_log (actor, action, target) VALUES ($1, 'unban', $2)")
         .bind(username)
         .bind(target_user)
-        .execute(&state.pool)
-        .await
+        .execute(&state.pool).await
         .unwrap();
 }
 
@@ -468,7 +497,7 @@ async fn handle_regular_message(
     redis_conn: &mut redis::Connection,
     username: &str,
     _out_tx: &mpsc::UnboundedSender<String>,
-    input: &str,
+    input: &str
 ) {
     if input.len() > 4096 {
         send_notice(writer, "Message too long (max 4096 characters).").await;
@@ -517,13 +546,14 @@ async fn handle_regular_message(
     let room_id: i32 = state.get_or_create_db_room(&user_room, "system").await;
     state.send_to_room(&user_room, &json).await;
 
-    sqlx::query("INSERT INTO messages (username, content, message_type, room_id) VALUES ($1, $2, $3, $4)")
+    sqlx::query(
+        "INSERT INTO messages (username, content, message_type, room_id) VALUES ($1, $2, $3, $4)"
+    )
         .bind(&msg.username)
         .bind(&msg.content)
-        .bind((msg.message_type).to_string())
+        .bind(msg.message_type.to_string())
         .bind(room_id)
-        .execute(&state.pool)
-        .await
+        .execute(&state.pool).await
         .unwrap();
 }
 
@@ -535,7 +565,9 @@ async fn handle_read_command(state: &AppState, username: &str, input: &str) {
     let mut parts = input.splitn(2, ' ');
     let room = match parts.next() {
         Some(r) if !r.is_empty() => r,
-        _ => return,
+        _ => {
+            return;
+        }
     };
     let ids_csv = parts.next().unwrap_or("").trim();
     if ids_csv.is_empty() {
@@ -554,11 +586,7 @@ async fn handle_read_command(state: &AppState, username: &str, input: &str) {
     state.send_to_room(room, &receipt).await;
 }
 
-async fn cleanup_disconnect(
-    state: &AppState,
-    redis_conn: &mut redis::Connection,
-    username: &str,
-) {
+async fn cleanup_disconnect(state: &AppState, redis_conn: &mut redis::Connection, username: &str) {
     let _: Result<usize, _> = redis_conn.del(format!("presence:{}", username));
     let user_room = state.get_user_room(username).await;
     let _ = redis_conn.del::<_, usize>(format!("typing:{}:{}", user_room, username));
@@ -593,7 +621,10 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
     let username = username.trim().to_string();
 
     if !validate_username(&username) {
-        send_notice(&mut writer, "Username must be 3-32 characters (letters, numbers, underscores).").await;
+        send_notice(
+            &mut writer,
+            "Username must be 3-32 characters (letters, numbers, underscores)."
+        ).await;
         return;
     }
 
@@ -602,12 +633,15 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
         return;
     }
 
-    match sqlx::query_scalar::<_, String>("SELECT password_hash FROM users WHERE username = $1")
-        .bind(&username)
-        .fetch_optional(&state.pool).await
+    match
+        sqlx
+            ::query_scalar::<_, String>("SELECT password_hash FROM users WHERE username = $1")
+            .bind(&username)
+            .fetch_optional(&state.pool).await
     {
         Ok(Some(_)) => send_notice(&mut writer, "Password required. Send: /login <password>").await,
-        Ok(None) => send_notice(&mut writer, "Register a password. Send: /register <password>").await,
+        Ok(None) =>
+            send_notice(&mut writer, "Register a password. Send: /register <password>").await,
         Err(_) => {
             send_notice(&mut writer, "Database error.").await;
             return;
@@ -620,7 +654,8 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
 
     let _: () = redis_conn.set_ex(format!("presence:{}", username), "online", 30).unwrap();
 
-    let user_role: String = sqlx::query_scalar("SELECT role FROM users WHERE username = $1")
+    let user_role: String = sqlx
+        ::query_scalar("SELECT role FROM users WHERE username = $1")
         .bind(&username)
         .fetch_one(&state.pool).await
         .unwrap_or_else(|_| "user".to_string());
@@ -629,7 +664,8 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
     state.register_sender(&username, out_tx.clone()).await;
 
     let memberships = state.get_user_room_memberships(&username).await;
-    let current_room = state.get_last_room(&username).await
+    let current_room = state
+        .get_last_room(&username).await
         .unwrap_or_else(|| "general".to_string());
 
     // Subscribe to every room this user belongs to, not just the one
@@ -660,8 +696,11 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
     state.send_to_room(&current_room, &join_json).await;
 
     // Tell the newly-connected client who's online globally (from Redis).
-    let online: Vec<String> = state.get_online_users().await
-        .into_iter().filter(|u| u != &username).collect();
+    let online: Vec<String> = state
+        .get_online_users().await
+        .into_iter()
+        .filter(|u| u != &username)
+        .collect();
     let sync_msg = ChatMessage {
         id: String::new(),
         username: String::new(),
@@ -675,7 +714,8 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
     let _ = out_tx.send(sync_json);
 
     // Sync current typing state from Redis
-    let typing_keys: Vec<String> = redis::cmd("KEYS")
+    let typing_keys: Vec<String> = redis
+        ::cmd("KEYS")
         .arg(format!("typing:{}:*", current_room))
         .query(&mut redis_conn)
         .unwrap_or_default();
