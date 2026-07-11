@@ -1,5 +1,5 @@
 use ratatui::{
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 use chrono::Local;
@@ -17,18 +17,18 @@ pub fn border_style(pane: FocusPane, focus: FocusPane) -> Style {
 }
 
 pub fn format_title(username: &str) -> String {
-    format!("RETRO CHAT — @{}", username)
+    format!("RETRO CHAT \u{2014} @{}", username)
 }
 
-pub fn format_user_message(msg: &ChatMessage) -> Vec<Line<'static>> {
+pub fn format_user_message(msg: &ChatMessage, color: Color) -> Vec<Line<'static>> {
     let timestamp = msg.timestamp.chars().take(5).collect::<String>();
     let ts_span = Span::styled(
         format!("[{}] ", timestamp),
-        Style::default().fg(AMBER),
+        Style::default().fg(color),
     );
     let user_span = Span::styled(
         format!("{} \u{25B6} ", msg.username.clone()),
-        Style::default().fg(AMBER).add_modifier(Modifier::BOLD),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
     );
     let mut lines: Vec<Line<'static>> = msg.content
         .lines()
@@ -38,13 +38,13 @@ pub fn format_user_message(msg: &ChatMessage) -> Vec<Line<'static>> {
                 Line::from(vec![
                     ts_span.clone(),
                     user_span.clone(),
-                    Span::styled(line.to_string(), Style::default().fg(AMBER)),
+                    Span::styled(line.to_string(), Style::default().fg(color)),
                 ])
             } else {
                 let indent = " ".repeat(timestamp.len() + msg.username.len() + 5);
                 Line::from(vec![
-                    Span::styled(indent, Style::default().fg(AMBER)),
-                    Span::styled(line.to_string(), Style::default().fg(AMBER)),
+                    Span::styled(indent, Style::default().fg(color)),
+                    Span::styled(line.to_string(), Style::default().fg(color)),
                 ])
             }
         })
@@ -56,6 +56,12 @@ pub fn format_user_message(msg: &ChatMessage) -> Vec<Line<'static>> {
 }
 
 pub fn format_system_message(msg: &ChatMessage) -> Vec<Line<'static>> {
+    if msg.content.is_empty() {
+        return vec![Line::from(Span::styled(
+            "*** ***".to_string(),
+            Style::default().fg(CYAN),
+        ))];
+    }
     msg.content
         .lines()
         .map(|line| {
@@ -67,9 +73,12 @@ pub fn format_system_message(msg: &ChatMessage) -> Vec<Line<'static>> {
 
 pub fn make_system_msg(text: &str) -> ChatMessage {
     ChatMessage {
+        id: String::new(),
         username: "system".to_string(),
         content: text.to_string(),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::SystemNotification,
+        room: String::new(),
+        is_history: false,
     }
 }

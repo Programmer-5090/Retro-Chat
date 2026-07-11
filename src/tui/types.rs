@@ -1,10 +1,15 @@
+use std::collections::HashSet;
+
 use ratatui::style::Color;
 
 use crate::ChatMessage;
 
 pub const AMBER: Color = Color::Rgb(255, 176, 0);
+pub const ORANGE: Color = Color::Rgb(255, 120, 0);
 pub const CYAN: Color = Color::Cyan;
 pub const BLACK: Color = Color::Black;
+/// Green tint for messages you have read or the recipient has read.
+pub const READ: Color = Color::Rgb(80, 220, 130);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FocusPane {
@@ -25,9 +30,10 @@ pub struct UiAppState {
     pub rooms: Vec<String>,
     pub current_room: String,
     pub scroll_offset: u16,
-    pub messages: Vec<(String, ChatMessage)>,
+    pub messages: Vec<ChatMessage>,
     pub focus: FocusPane,
     pub should_quit: bool,
+    pub unread_rooms: HashSet<String>,
 }
 
 #[allow(dead_code)]
@@ -40,6 +46,7 @@ impl UiAppState {
             focus: FocusPane::Input,
             messages: vec![],
             should_quit: false,
+            unread_rooms: HashSet::new(),
         }
     }
 
@@ -76,12 +83,15 @@ impl UiAppState {
         };
     }
 
-    fn current_room_msg_count(&self) -> usize {
-        self.messages.iter().filter(|(r, _)| r == &self.current_room).count()
+    fn room_message_count(&self) -> usize {
+        self.messages
+            .iter()
+            .filter(|m| m.room == self.current_room || m.room.is_empty())
+            .count()
     }
 
     pub fn scroll_up(&mut self, visible_height: usize) {
-        let count = self.current_room_msg_count();
+        let count = self.room_message_count();
         let max = count.saturating_sub(visible_height) as u16;
         self.scroll_offset = (self.scroll_offset + 1).min(max);
     }
@@ -93,17 +103,18 @@ impl UiAppState {
     }
 
     pub fn clear_messages(&mut self) {
-        self.messages.retain(|(r, _)| r != &self.current_room);
+        self.messages
+            .retain(|m| m.room != self.current_room && !m.room.is_empty());
         self.scroll_offset = 0;
     }
 
     pub fn clamp_scroll(&mut self, visible_height: usize) {
-        let count = self.current_room_msg_count();
+        let count = self.room_message_count();
         let max = count.saturating_sub(visible_height) as u16;
         self.scroll_offset = self.scroll_offset.min(max);
     }
 
     pub fn append_message(&mut self, msg: ChatMessage) {
-        self.messages.push((self.current_room.clone(), msg));
+        self.messages.push(msg);
     }
 }

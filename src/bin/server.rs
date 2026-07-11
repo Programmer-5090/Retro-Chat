@@ -30,11 +30,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let tls_status = if tls_acceptor.is_some() { "TLS" } else { "TCP" };
     let line1 = "RETRO CHAT SERVER ACTIVE";
-    let line2 = format!("{}  Listening on: {}", tls_status, bind_addr);
+    let line2 = format!("{} Listening on: {}", tls_status, bind_addr);
     let line3 = "Press Ctrl+C to shutdown";
     let inner_width = line1.len().max(line2.len()).max(line3.len()) + 2;
     let bar: String = "═".repeat(inner_width);
-    let pad = |s: &str| format!("║ {:<width$} ║", s, width = inner_width - 2);
+    let pad = |s: &str| format!("║ {:^width$} ║", s, width = inner_width - 2);
     println!("╔{}╗", bar);
     println!("{}", pad(line1));
     println!("{}", pad(&line2));

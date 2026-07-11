@@ -12,7 +12,7 @@ use argon2::{
 };
 use rand::Rng;
 
-use crate::{ChatMessage, MessageType, build_notice, AppState};
+use crate::{ChatMessage, MessageType, build_notice, build_read_receipt, generate_message_id, AppState};
 
 async fn send_notice(writer: &mut (impl AsyncWrite + Unpin), text: &str) {
     let notice = build_notice(text);
@@ -148,10 +148,13 @@ async fn send_room_list(state: &AppState, username: &str, out_tx: &mpsc::Unbound
         memberships.join(",")
     };
     let msg = ChatMessage {
+        id: String::new(),
         username: "Server".to_string(),
         content: room_names,
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::RoomList,
+        room: String::new(),
+        is_history: false,
     };
     let json = serde_json::to_string(&msg).unwrap();
     let _ = out_tx.send(json);
@@ -170,19 +173,24 @@ async fn handle_leave_command(
     }
 
     state.remove_room_membership(username, &current_room).await;
+    state.unsubscribe_room(username, &current_room).await;
 
     let leave_notice = ChatMessage {
+        id: String::new(),
         username: username.to_string(),
         content: "Left the room".to_string(),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::SystemNotification,
+        room: current_room.clone(),
+        is_history: false,
     };
     let leave_json = serde_json::to_string(&leave_notice).unwrap();
     state.send_to_room(&current_room, &leave_json).await;
 
     let fallback = state.get_last_room(username).await
         .unwrap_or_else(|| "general".to_string());
-    state.join_room(username, &fallback, out_tx.clone()).await;
+    state.subscribe_room(username, &fallback, out_tx.clone()).await;
+    state.set_active_room(username, &fallback).await;
     send_notice(writer, &format!("Left '{}'. Now in '{}'.", current_room, fallback)).await;
     replay_history(state, &fallback, out_tx).await;
     send_room_list(state, username, out_tx).await;
@@ -200,6 +208,7 @@ async fn replay_history(state: &AppState, room_name: &str, out_tx: &mpsc::Unboun
 
     for row in rows.into_iter().rev() {
         let msg = ChatMessage {
+            id: generate_message_id(),
             username: row.0,
             content: row.1,
             timestamp: row.2.format("%H:%M:%S").to_string(),
@@ -207,6 +216,8 @@ async fn replay_history(state: &AppState, room_name: &str, out_tx: &mpsc::Unboun
                 "UserMessage" => MessageType::UserMessage,
                 _ => MessageType::SystemNotification,
             },
+            room: room_name.to_string(),
+            is_history: true,
         };
         let msg_json = serde_json::to_string(&msg).unwrap();
         let _ = out_tx.send(msg_json);
@@ -227,28 +238,26 @@ async fn handle_join_command(
     }
     let old_room = state.get_user_room(username).await;
     let _new_room_id: i32 = state.get_or_create_db_room(room_name, username).await;
-    state.join_room(username, room_name, out_tx.clone()).await;
+    state.subscribe_room(username, room_name, out_tx.clone()).await;
+    state.set_active_room(username, room_name).await;
     state.save_room_membership(username, room_name).await;
     send_notice(writer, &format!("Joined room '{}'.", room_name)).await;
     replay_history(state, room_name, out_tx).await;
     send_room_list(state, username, out_tx).await;
 
+    // Note: the user stays live-subscribed to `old_room` (they can still
+    // get messages/unread badges there) — they've only changed which room
+    // is active, so there's no "left the room" notice to send anymore.
     let dm_move = old_room.starts_with("__dm__") || room_name.starts_with("__dm__");
     if !dm_move {
-        let leave_notice = ChatMessage {
-            username: username.to_string(),
-            content: "Left the room".to_string(),
-            timestamp: Local::now().format("%H:%M:%S").to_string(),
-            message_type: MessageType::SystemNotification,
-        };
-        let leave_json = serde_json::to_string(&leave_notice).unwrap();
-        state.send_to_room(&old_room, &leave_json).await;
-
         let join_notice = ChatMessage {
+            id: String::new(),
             username: username.to_string(),
             content: "Joined the room".to_string(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             message_type: MessageType::SystemNotification,
+            room: room_name.to_string(),
+            is_history: false,
         };
         let join_json = serde_json::to_string(&join_notice).unwrap();
         state.send_to_room(room_name, &join_json).await;
@@ -296,17 +305,21 @@ async fn handle_msg_command(
     let dm_room = format!("__dm__{}", users.join("_"));
 
     let room_id: i32 = state.get_or_create_db_room(&dm_room, username).await;
-    state.join_room(username, &dm_room, out_tx.clone()).await;
+    state.subscribe_room(username, &dm_room, out_tx.clone()).await;
+    state.set_active_room(username, &dm_room).await;
     state.save_room_membership(username, &dm_room).await;
     send_notice(writer, &format!("Now in DM with {}.", target)).await;
     replay_history(state, &dm_room, out_tx).await;
     send_room_list(state, username, out_tx).await;
 
     let dm_msg = ChatMessage {
+        id: generate_message_id(),
         username: username.to_string(),
         content: dm_text.to_string(),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::UserMessage,
+        room: dm_room.clone(),
+        is_history: false,
     };
     let dm_json = serde_json::to_string(&dm_msg).unwrap();
 
@@ -319,15 +332,20 @@ async fn handle_msg_command(
         .await
         .unwrap();
 
-    state.send_to_room(&dm_room, &dm_json).await;
-
     state.save_room_membership(target, &dm_room).await;
 
     if let Some(target_tx) = state.get_sender(target).await {
+        // Subscribe the recipient to live delivery for this DM room right
+        // away (not just DB membership) — so once they check their
+        // sidebar, further replies here show up (and flag unread) without
+        // them having to reconnect first.
+        state.subscribe_room(target, &dm_room, target_tx.clone()).await;
         let whisper = build_notice(&format!("DM from {}: '{}'. Check your sidebar to join.", username, dm_text));
         let _ = target_tx.send(whisper);
         send_room_list(state, target, &target_tx).await;
     }
+
+    state.send_to_room(&dm_room, &dm_json).await;
 }
 
 async fn handle_mute_command(
@@ -463,11 +481,16 @@ async fn handle_regular_message(
         return;
     }
 
+    let user_room = state.get_user_room(username).await;
+
     let msg = ChatMessage {
+        id: generate_message_id(),
         username: username.to_string(),
         content: input.to_string(),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::UserMessage,
+        room: user_room.clone(),
+        is_history: false,
     };
     let json = serde_json::to_string(&msg).unwrap();
 
@@ -477,10 +500,13 @@ async fn handle_regular_message(
     }
     if count > 20 {
         let warn = ChatMessage {
+            id: String::new(),
             username: "Server".to_string(),
             content: "Rate limit exceeded. Slow down.".to_string(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             message_type: MessageType::SystemNotification,
+            room: String::new(),
+            is_history: false,
         };
         let warn_json = serde_json::to_string(&warn).unwrap();
         let _ = writer.write_all(warn_json.as_bytes()).await;
@@ -488,7 +514,6 @@ async fn handle_regular_message(
         return;
     }
 
-    let user_room = state.get_user_room(username).await;
     let room_id: i32 = state.get_or_create_db_room(&user_room, "system").await;
     state.send_to_room(&user_room, &json).await;
 
@@ -502,6 +527,33 @@ async fn handle_regular_message(
         .unwrap();
 }
 
+/// Handles the client's `/read <room> <id1,id2,...>` command by relaying a
+/// read receipt to everyone currently in that room. Silent on malformed
+/// input — this is a background housekeeping command, not something a user
+/// types directly.
+async fn handle_read_command(state: &AppState, username: &str, input: &str) {
+    let mut parts = input.splitn(2, ' ');
+    let room = match parts.next() {
+        Some(r) if !r.is_empty() => r,
+        _ => return,
+    };
+    let ids_csv = parts.next().unwrap_or("").trim();
+    if ids_csv.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = ids_csv
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+
+    let receipt = build_read_receipt(username, room, &ids);
+    state.send_to_room(room, &receipt).await;
+}
+
 async fn cleanup_disconnect(
     state: &AppState,
     redis_conn: &mut redis::Connection,
@@ -511,10 +563,13 @@ async fn cleanup_disconnect(
     let user_room = state.get_user_room(username).await;
     if !user_room.starts_with("__dm__") {
         let leave_msg = ChatMessage {
+            id: String::new(),
             username: username.to_string(),
             content: "Left the chat".to_string(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             message_type: MessageType::SystemNotification,
+            room: user_room.clone(),
+            is_history: false,
         };
         let leave_json = serde_json::to_string(&leave_msg).unwrap();
         state.send_to_room(&user_room, &leave_json).await;
@@ -572,19 +627,33 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
     state.register_sender(&username, out_tx.clone()).await;
 
+    let memberships = state.get_user_room_memberships(&username).await;
     let current_room = state.get_last_room(&username).await
         .unwrap_or_else(|| "general".to_string());
-    state.join_room(&username, &current_room, out_tx.clone()).await;
+
+    // Subscribe to every room this user belongs to, not just the one
+    // they'll land on — otherwise messages sent to their other rooms
+    // (DMs, other channels) never reach their socket at all.
+    for room in &memberships {
+        state.subscribe_room(&username, room, out_tx.clone()).await;
+    }
+    if !memberships.iter().any(|r| r == &current_room) {
+        state.subscribe_room(&username, &current_room, out_tx.clone()).await;
+    }
+    state.set_active_room(&username, &current_room).await;
     state.save_room_membership(&username, &current_room).await;
 
     replay_history(&state, &current_room, &out_tx).await;
     send_room_list(&state, &username, &out_tx).await;
 
     let join_msg = ChatMessage {
+        id: String::new(),
         username: username.clone(),
         content: "Joined the chat".to_string(),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::SystemNotification,
+        room: current_room.clone(),
+        is_history: false,
     };
     let join_json = serde_json::to_string(&join_msg).unwrap();
     state.send_to_room(&current_room, &join_json).await;
@@ -613,6 +682,8 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                         }
                     } else if let Some(args) = input.strip_prefix("/msg ") {
                         handle_msg_command(&state, &mut writer, &username, &out_tx, args).await;
+                    } else if let Some(args) = input.strip_prefix("/read ") {
+                        handle_read_command(&state, &username, args).await;
                     } else if let Some(args) = input.strip_prefix("/mute ") {
                         handle_mute_command(&state, &mut writer, &mut redis_conn, &username, &user_role, args).await;
                     } else if let Some(args) = input.strip_prefix("/unmute ") {

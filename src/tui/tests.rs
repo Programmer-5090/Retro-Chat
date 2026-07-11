@@ -1,13 +1,17 @@
 use proptest::prelude::*;
 
 use super::types::{FocusPane, UiAppState};
+use ratatui::style::Color;
 use super::render::{border_style, format_title, format_user_message, format_system_message};
 
 use crate::ChatMessage;
 use crate::message::MessageType;
 
 fn arb_message_type() -> impl Strategy<Value = MessageType> {
-    prop_oneof![Just(MessageType::UserMessage), Just(MessageType::SystemNotification)]
+    prop_oneof![
+        Just(MessageType::UserMessage),
+        Just(MessageType::SystemNotification),
+    ]
 }
 
 prop_compose! {
@@ -17,7 +21,7 @@ prop_compose! {
         timestamp in "[0-9]{2}:[0-9]{2}:[0-9]{2}",
         message_type in arb_message_type(),
     ) -> ChatMessage {
-        ChatMessage { username, content, timestamp, message_type }
+        ChatMessage { id: String::new(), username, content, timestamp, message_type, room: String::new(), is_history: false }
     }
 }
 
@@ -44,12 +48,15 @@ proptest! {
     ) {
         let mut state = UiAppState::new();
         for _ in 0..msg_count {
-            state.messages.push(("general".into(), ChatMessage {
+            state.messages.push(ChatMessage {
+                id: String::new(),
                 username: "u".into(),
                 content: "c".into(),
                 timestamp: "00:00:00".into(),
                 message_type: MessageType::UserMessage,
-            }));
+                room: "general".into(),
+                is_history: false,
+            });
         }
         state.scroll_offset = initial_offset.min(state.messages.len().saturating_sub(visible_height) as u16);
 
@@ -150,7 +157,6 @@ proptest! {
 proptest! {
     #[test]
     fn prop_border_style_colours(pane in arb_focus_pane(), focus in arb_focus_pane()) {
-        use ratatui::style::Color;
         let style = border_style(pane, focus);
         if pane == focus {
             assert_eq!(style.fg, Some(Color::Cyan), "focused pane should have CYAN border");
@@ -174,8 +180,8 @@ proptest! {
 proptest! {
     #[test]
     fn prop_user_message_format(msg in arb_chat_message().prop_filter("must be UserMessage", |m| matches!(m.message_type, MessageType::UserMessage))) {
-        let line = format_user_message(&msg);
-        let rendered = line.to_string();
+        let lines = format_user_message(&msg, Color::Rgb(255, 176, 0));
+        let rendered: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(rendered.contains(&msg.username), "missing username");
         assert!(rendered.contains("\u{25B6}"), "missing ▶ separator");
         assert!(rendered.contains(&msg.timestamp[..5]), "missing timestamp prefix");
@@ -187,8 +193,8 @@ proptest! {
 proptest! {
     #[test]
     fn prop_system_message_format(msg in arb_chat_message().prop_filter("must be SystemNotification", |m| matches!(m.message_type, MessageType::SystemNotification))) {
-        let line = format_system_message(&msg);
-        let rendered = line.to_string();
+        let lines = format_system_message(&msg);
+        let rendered: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(rendered.starts_with("*** "), "should start with ***");
         assert!(rendered.ends_with(" ***"), "should end with ***");
         assert!(rendered.contains(&msg.content), "missing content");

@@ -1,18 +1,22 @@
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     prelude::{CrosstermBackend, Terminal},
     style::{Color, Style},
     symbols::border,
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Sparkline, Wrap},
 };
-use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     sync::{Mutex, mpsc},
@@ -20,12 +24,14 @@ use tokio::{
 use tui_textarea::TextArea;
 
 use crate::client_helpers::ClientStream;
-
-use super::render::{border_style, format_title, format_user_message, format_system_message, make_system_msg};
-use super::types::{AMBER, BLACK, CYAN, FocusPane};
-
-use crate::ChatMessage;
 use crate::message::MessageType;
+use crate::ChatMessage;
+
+use super::render::{
+    border_style, format_system_message, format_title,
+    format_user_message, make_system_msg,
+};
+use super::types::{AMBER, BLACK, CYAN, ORANGE, READ, FocusPane};
 
 pub async fn run_chat_ui(
     username: String,
@@ -47,18 +53,24 @@ impl Drop for CleanGuard {
     }
 }
 
-pub(crate) struct App {
-    pub(crate) username: String,
-    pub(crate) rooms: Vec<String>,
-    pub(crate) current_room: String,
-    messages: Vec<(String, ChatMessage)>,
-    pub(crate) scroll_offset: u16,
-    pub(crate) focus: FocusPane,
-    pub(crate) textarea: TextArea<'static>,
-    pub(crate) writer: Arc<Mutex<tokio::io::WriteHalf<ClientStream>>>,
-    pub(crate) should_quit: bool,
-    pub(crate) server_rx: mpsc::UnboundedReceiver<String>,
+pub struct App {
+    pub username: String,
+    pub rooms: Vec<String>,
+    pub current_room: String,
+    messages: Vec<(ChatMessage, bool)>,
+    pub scroll_offset: u16,
+    pub focus: FocusPane,
+    pub textarea: TextArea<'static>,
+    pub writer: Arc<Mutex<tokio::io::WriteHalf<ClientStream>>>,
+    pub should_quit: bool,
+    pub server_rx: mpsc::UnboundedReceiver<String>,
     sidebar_scroll: usize,
+    unread_rooms: HashSet<String>,
+    /// Ids of your own messages that the recipient has read (per the
+    /// ReadReceipt broadcasts), rendered in the "read" color.
+    read_message_ids: HashSet<String>,
+    message_times: VecDeque<Instant>,
+    sparkline_data: VecDeque<u16>,
 }
 
 impl App {
@@ -84,6 +96,10 @@ impl App {
             writer: Arc::new(Mutex::new(writer)),
             server_rx,
             sidebar_scroll: 0,
+            unread_rooms: HashSet::new(),
+            read_message_ids: HashSet::new(),
+            message_times: VecDeque::new(),
+            sparkline_data: VecDeque::from(vec![0u16; 40]),
         }
     }
 
@@ -117,7 +133,6 @@ impl App {
         });
 
         let res = self.event_loop(&mut terminal).await;
-
         let _ = self.writer.lock().await.shutdown().await;
         res
     }
@@ -126,8 +141,19 @@ impl App {
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut last_sparkline_tick = Instant::now();
         loop {
             terminal.draw(|f| self.render(f))?;
+
+            let now = Instant::now();
+            if now - last_sparkline_tick >= Duration::from_secs(1) {
+                let cutoff = now - Duration::from_secs(2);
+                let count = self.message_times.iter().filter(|t| **t > cutoff).count() as u16;
+                self.sparkline_data.push_back(count);
+                self.sparkline_data.pop_front();
+                last_sparkline_tick = now;
+            }
+
             if event::poll(Duration::from_millis(16))? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
@@ -135,12 +161,12 @@ impl App {
                     }
                 }
             }
-            loop {
+                loop {
                 match self.server_rx.try_recv() {
-                    Ok(line) => self.handle_server_message(&line),
+                    Ok(line) => self.handle_server_message(&line).await,
                     Err(mpsc::error::TryRecvError::Empty) => break,
                     Err(mpsc::error::TryRecvError::Disconnected) => {
-                        self.push_msg(make_system_msg("Internal channel error"));
+                        self.ingest_msg(make_system_msg("Internal channel error"), true);
                         self.should_quit = true;
                         break;
                     }
@@ -151,6 +177,88 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn ingest_msg(&mut self, msg: ChatMessage, read: bool) {
+        self.message_times.push_back(Instant::now());
+        if self.message_times.len() > 200 {
+            self.message_times.pop_front();
+        }
+
+        let was_unread = !read && !msg.room.is_empty() && msg.room != self.current_room;
+        if was_unread {
+            self.unread_rooms.insert(msg.room.clone());
+        }
+
+        self.messages.push((msg, was_unread));
+        let visible: usize = 20;
+        self.clamp_scroll(visible);
+    }
+
+    /// Locally resets any lingering "unread" color for messages in `room`
+    /// back to normal, without notifying anyone. Used when a live message
+    /// arrives in the room you're currently viewing — per spec, the room
+    /// being actively watched means older unread messages should no longer
+    /// look unread. This is intentionally NOT called just from switching
+    /// rooms (see `handle_server_message`'s `is_history` check), so that
+    /// leaving and re-entering a room without any new activity still shows
+    /// the same unread coloring you left behind.
+    fn clear_room_read_state(&mut self, room: &str) {
+        for pair in &mut self.messages {
+            let same_room =
+                pair.0.room == room || (pair.0.room.is_empty() && room == self.current_room);
+            if same_room {
+                pair.1 = false;
+            }
+        }
+        self.unread_rooms.remove(room);
+    }
+
+    /// Ids of currently-unread messages authored by someone else in `room`,
+    /// used to build a read-receipt payload.
+    fn collect_unread_ids(&self, room: &str) -> Vec<String> {
+        self.messages
+            .iter()
+            .filter(|(msg, was_unread)| {
+                *was_unread
+                    && msg.username != self.username
+                    && !msg.id.is_empty()
+                    && (msg.room == room || (msg.room.is_empty() && room == self.current_room))
+            })
+            .map(|(msg, _)| msg.id.clone())
+            .collect()
+    }
+
+    /// Marks everything in `room` as read locally AND tells the server, so
+    /// the original senders can see their messages flip to the "read"
+    /// color. Only call this for a deliberate read action (you replying in
+    /// the room) — calling it on every incoming message would flood the
+    /// server with acks during history replay.
+    async fn mark_all_read(&mut self, room: &str) {
+        let ids = self.collect_unread_ids(room);
+        self.clear_room_read_state(room);
+        self.send_read_receipt(room, ids).await;
+    }
+
+    async fn send_read_receipt(&mut self, room: &str, ids: Vec<String>) {
+        if ids.is_empty() {
+            return;
+        }
+        let wire = format!("/read {} {}\n", room, ids.join(","));
+        let _ = self.writer.lock().await.write_all(wire.as_bytes()).await;
+    }
+
+    fn messages_for_room(&self, room: &str) -> impl Iterator<Item = &(ChatMessage, bool)> {
+        self.messages.iter().filter(move |(msg, _)| {
+            msg.room == room || (msg.room.is_empty() && room == self.current_room)
+        })
+    }
+
+    fn room_message_count(&self, room: &str) -> usize {
+        self.messages
+            .iter()
+            .filter(|(msg, _)| msg.room == room || (msg.room.is_empty() && room == self.current_room))
+            .count()
     }
 
     async fn handle_key(&mut self, key: event::KeyEvent) {
@@ -177,47 +285,44 @@ impl App {
         }
 
         match self.focus {
-            FocusPane::Input => {
-                match key.code {
-                    KeyCode::Enter => {
-                        let text = self.textarea.lines().first().cloned().unwrap_or_default();
-                        self.textarea.select_all();
-                        self.textarea.cut();
-                        self.send_or_command(text).await;
-                    }
-                    KeyCode::Char(_) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        let current_len = self.textarea
-                            .lines()
-                            .first()
-                            .map(|l| l.len())
-                            .unwrap_or(0);
-                        if current_len < 500 {
-                            self.textarea.input(key);
-                        }
-                    }
-                    | KeyCode::Backspace
-                    | KeyCode::Delete
-                    | KeyCode::Left
-                    | KeyCode::Right
-                    | KeyCode::Home
-                    | KeyCode::End => {
+            FocusPane::Input => match key.code {
+                KeyCode::Enter => {
+                    let text = self.textarea.lines().first().cloned().unwrap_or_default();
+                    self.textarea.select_all();
+                    self.textarea.cut();
+                    self.send_or_command(text).await;
+                }
+                KeyCode::Char(_) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let current_len = self
+                        .textarea
+                        .lines()
+                        .first()
+                        .map(|l| l.len())
+                        .unwrap_or(0);
+                    if current_len < 500 {
                         self.textarea.input(key);
                     }
-                    _ => {}
                 }
-            }
-            FocusPane::Messages => {
-                match key.code {
-                    KeyCode::Up => {
-                        let visible = /* approximate */ 20;
-                        self.scroll_up(visible);
-                    }
-                    KeyCode::Down => {
-                        self.scroll_down();
-                    }
-                    _ => {}
+                | KeyCode::Backspace
+                | KeyCode::Delete
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Home
+                | KeyCode::End => {
+                    self.textarea.input(key);
                 }
-            }
+                _ => {}
+            },
+            FocusPane::Messages => match key.code {
+                KeyCode::Up => {
+                    let visible = 20;
+                    self.scroll_up(visible);
+                }
+                KeyCode::Down => {
+                    self.scroll_down();
+                }
+                _ => {}
+            },
             FocusPane::Sidebar => {
                 let max = self.rooms.len().saturating_sub(1);
                 match key.code {
@@ -233,20 +338,6 @@ impl App {
         }
     }
 
-    fn push_msg(&mut self, msg: ChatMessage) {
-        self.messages.push((self.current_room.clone(), msg));
-    }
-
-    fn current_room_msgs(&self) -> impl Iterator<Item = &ChatMessage> {
-        self.messages.iter().filter_map(move |(r, m)| {
-            if r == &self.current_room { Some(m) } else { None }
-        })
-    }
-
-    fn current_room_msg_count(&self) -> usize {
-        self.messages.iter().filter(|(r, _)| r == &self.current_room).count()
-    }
-
     async fn send_or_command(&mut self, text: String) {
         let text = text.trim().to_string();
         if text.is_empty() {
@@ -259,18 +350,23 @@ impl App {
 
             match cmd {
                 "/help" => {
-                    let help_text = "Commands:\n\
-                        /join <room>    — join a room\n\
-                        /leave          — leave current room\n\
-                        /rooms          — list server rooms\n\
-                        /dm <user> <msg> — direct message\n\
-                        /clear          — clear messages\n\
-                        /help           — show this help\n\
-                        /quit           — quit";
-                    self.push_msg(make_system_msg(help_text));
+                    self.ingest_msg(
+                        make_system_msg(
+                            "Commands:\n\
+                             /join <room>    \u{2014} join a room\n\
+                             /leave          \u{2014} leave current room\n\
+                             /rooms          \u{2014} list server rooms\n\
+                             /dm <user> <msg> \u{2014} direct message\n\
+                             /clear          \u{2014} clear messages\n\
+                             /help           \u{2014} show this help\n\
+                             /quit           \u{2014} quit",
+                        ),
+                        true,
+                    );
                 }
                 "/clear" => {
-                    self.messages.retain(|(r, _)| r != &self.current_room);
+                    self.messages
+                        .retain(|(msg, _)| msg.room != self.current_room && !msg.room.is_empty());
                     self.scroll_offset = 0;
                 }
                 "/quit" => {
@@ -280,17 +376,20 @@ impl App {
                 "/join" => {
                     let room = parts.get(1).copied().unwrap_or("").trim();
                     if room.is_empty() || room.len() > 32 || room.contains(char::is_whitespace) {
-                        self.push_msg(
-                            make_system_msg("Usage: /join <room>  (1–32 non-whitespace chars)"),
+                        self.ingest_msg(
+                            make_system_msg(
+                                "Usage: /join <room>  (1\u{2013}32 non-whitespace chars)",
+                            ),
+                            true,
                         );
                     } else {
                         if !self.rooms.iter().any(|r| r == room) {
                             self.rooms.push(room.to_string());
                         }
-                        self.messages.retain(|(r, _)| r != &self.current_room);
                         self.current_room = room.to_string();
+                        self.mark_all_read(room).await;
                         self.scroll_offset = 0;
-                        self.push_msg(make_system_msg(&format!("Joined room: {}", room)));
+                        self.ingest_msg(make_system_msg(&format!("Joined room: {}", room)), true);
                         let msg = format!("/join {}\n", room);
                         let _ = self.writer.lock().await.write_all(msg.as_bytes()).await;
                     }
@@ -300,10 +399,12 @@ impl App {
                         let left = self.current_room.clone();
                         self.rooms.retain(|r| r != &self.current_room);
                         self.current_room = self.rooms[0].clone();
-                        self.push_msg(make_system_msg(&format!("Left room: {}", left)));
+                        let cur = self.current_room.clone();
+                        self.clear_room_read_state(&cur);
+                        self.ingest_msg(make_system_msg(&format!("Left room: {}", left)), true);
                         let _ = self.writer.lock().await.write_all(b"/leave\n").await;
                     } else {
-                        self.push_msg(make_system_msg("Cannot leave the last room."));
+                        self.ingest_msg(make_system_msg("Cannot leave the last room."), true);
                     }
                 }
                 "/rooms" => {
@@ -313,7 +414,7 @@ impl App {
                     let user = parts.get(1).copied().unwrap_or("").trim();
                     let dm_msg = parts.get(2).copied().unwrap_or("").trim();
                     if user.is_empty() || dm_msg.is_empty() {
-                        self.push_msg(make_system_msg("Usage: /dm <user> <message>"));
+                        self.ingest_msg(make_system_msg("Usage: /dm <user> <message>"), true);
                     } else {
                         let mut users = vec![self.username.clone(), user.to_string()];
                         users.sort();
@@ -321,26 +422,28 @@ impl App {
                         if !self.rooms.iter().any(|r| r == &dm_room) {
                             self.rooms.push(dm_room.clone());
                         }
-                        self.messages.retain(|(r, _)| r != &self.current_room);
-                        self.current_room = dm_room;
+                        self.current_room = dm_room.clone();
+                        self.mark_all_read(&dm_room).await;
                         self.scroll_offset = 0;
                         let wire = format!("/msg {} {}\n", user, dm_msg);
                         let _ = self.writer.lock().await.write_all(wire.as_bytes()).await;
                     }
                 }
                 _ => {
-                    self.push_msg(make_system_msg(&format!("Unknown command: {}", text)));
+                    self.ingest_msg(make_system_msg(&format!("Unknown command: {}", text)), true);
                 }
             }
         } else {
+            let cur = self.current_room.clone();
+            self.mark_all_read(&cur).await;
             let wire = format!("{}\n", text);
             let _ = self.writer.lock().await.write_all(wire.as_bytes()).await;
         }
     }
 
-    fn handle_server_message(&mut self, line: &str) {
+    async fn handle_server_message(&mut self, line: &str) {
         if line == "__CONN_CLOSED__" {
-            self.push_msg(make_system_msg("Connection closed by server"));
+            self.ingest_msg(make_system_msg("Connection closed by server"), true);
             self.should_quit = true;
             return;
         }
@@ -348,7 +451,8 @@ impl App {
         if let Ok(msg) = serde_json::from_str::<ChatMessage>(line) {
             match msg.message_type {
                 MessageType::RoomList => {
-                    self.rooms = msg.content
+                    self.rooms = msg
+                        .content
                         .split(',')
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
@@ -360,10 +464,33 @@ impl App {
                         self.current_room = self.rooms[0].clone();
                     }
                 }
-                _ => {
-                    self.push_msg(msg);
-                    let visible: usize = 20;
-                    self.clamp_scroll(visible);
+                MessageType::ReadReceipt => {
+                    for id in msg.content.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                        self.read_message_ids.insert(id.to_string());
+                    }
+                }
+                MessageType::UserMessage => {
+                    let is_current_room = msg.room.is_empty() || msg.room == self.current_room;
+                    let room = msg.room.clone();
+                    let is_history = msg.is_history;
+                    let ack_id = if is_current_room && !is_history && msg.username != self.username
+                    {
+                        msg.id.clone()
+                    } else {
+                        String::new()
+                    };
+                    self.ingest_msg(msg, is_current_room);
+                    if is_current_room && !is_history {
+                        self.clear_room_read_state(&room);
+                        if !ack_id.is_empty() {
+                            let wire = format!("/read {} {}\n", room, ack_id);
+                            let _ = self.writer.lock().await.write_all(wire.as_bytes()).await;
+                        }
+                    }
+                }
+                MessageType::SystemNotification => {
+                    let read = msg.room.is_empty() || msg.room == self.current_room;
+                    self.ingest_msg(msg, read);
                 }
             }
         }
@@ -386,7 +513,7 @@ impl App {
     }
 
     fn scroll_up(&mut self, visible_height: usize) {
-        let count = self.current_room_msg_count();
+        let count = self.room_message_count(&self.current_room);
         let max = count.saturating_sub(visible_height) as u16;
         self.scroll_offset = (self.scroll_offset + 1).min(max);
     }
@@ -398,7 +525,7 @@ impl App {
     }
 
     fn clamp_scroll(&mut self, visible_height: usize) {
-        let count = self.current_room_msg_count();
+        let count = self.room_message_count(&self.current_room);
         let max = count.saturating_sub(visible_height) as u16;
         self.scroll_offset = self.scroll_offset.min(max);
     }
@@ -407,20 +534,27 @@ impl App {
         let title = format_title(&self.username);
         let widget = Paragraph::new(title)
             .style(Style::default().fg(AMBER))
-            .alignment(Alignment::Center);
+            .alignment(ratatui::layout::Alignment::Center);
         f.render_widget(widget, area);
     }
 
     fn render_sidebar(&mut self, f: &mut Frame, area: Rect) {
-        let lines: Vec<ratatui::text::Line> = self.rooms
+        let lines: Vec<ratatui::text::Line> = self
+            .rooms
             .iter()
             .map(|room| {
-                let style = if room == &self.current_room {
+                let has_unread = self.unread_rooms.contains(room);
+                let active = room == &self.current_room;
+                let prefix = if has_unread { "\u{25CF} " } else { "  " };
+                let display = format!("{}{}", prefix, room);
+                let style = if active {
                     Style::default().fg(CYAN)
+                } else if has_unread {
+                    Style::default().fg(CYAN).add_modifier(ratatui::style::Modifier::BOLD)
                 } else {
                     Style::default().fg(AMBER)
                 };
-                ratatui::text::Line::from(ratatui::text::Span::styled(room.as_str(), style))
+                ratatui::text::Line::from(ratatui::text::Span::styled(display, style))
             })
             .collect();
 
@@ -441,11 +575,24 @@ impl App {
     }
 
     fn render_messages(&self, f: &mut Frame, area: Rect) {
-        let lines: Vec<ratatui::text::Line> = self.current_room_msgs()
-            .flat_map(|msg| match msg.message_type {
-                MessageType::UserMessage => format_user_message(msg),
+        let lines: Vec<ratatui::text::Line> = self
+            .messages_for_room(&self.current_room)
+            .flat_map(|(msg, _)| match msg.message_type {
+                MessageType::UserMessage => {
+                    let color = if msg.username == self.username {
+                        if self.read_message_ids.contains(&msg.id) {
+                            READ
+                        } else {
+                            AMBER
+                        }
+                    } else {
+                        ORANGE
+                    };
+                    format_user_message(msg, color)
+                }
                 MessageType::SystemNotification => format_system_message(msg),
                 MessageType::RoomList => unreachable!(),
+                MessageType::ReadReceipt => unreachable!(),
             })
             .collect();
 
@@ -488,9 +635,40 @@ impl App {
     }
 
     fn render_status_bar(&self, f: &mut Frame, area: Rect) {
-        let status = Paragraph::new("F1:rooms  \u{2191}\u{2193}:scroll  Tab:focus")
-            .style(Style::default().fg(Color::DarkGray));
+        let spark_data: Vec<u64> = self.sparkline_data.iter().map(|v| *v as u64).collect();
+        let spark = Sparkline::default()
+            .data(&spark_data)
+            .style(Style::default().fg(AMBER).bg(BLACK));
+        let spark_area = Rect {
+            x: area.x + area.width.saturating_sub(41),
+            y: area.y,
+            width: 40.min(area.width.saturating_sub(1)),
+            height: 1,
+        };
+        let unread_str = if self.unread_rooms.is_empty() {
+            String::new()
+        } else {
+            let names: Vec<&str> = self
+                .unread_rooms
+                .iter()
+                .filter(|r| *r != &self.current_room)
+                .map(|s| s.as_str())
+                .collect();
+            if names.is_empty() {
+                String::new()
+            } else {
+                format!(" \u{25CF}{} ", names.join(" \u{25CF}"))
+            }
+        };
+        let label = format!(
+            "F1:rooms  \u{2191}\u{2193}:scroll  Tab:focus{}",
+            unread_str
+        );
+        let status = Paragraph::new(label).style(Style::default().fg(Color::DarkGray));
         f.render_widget(status, area);
+        if area.width >= 42 {
+            f.render_widget(spark, spark_area);
+        }
     }
 
     fn render(&mut self, f: &mut Frame) {
@@ -511,10 +689,7 @@ impl App {
         ]);
         let [title_area, body_area, input_area, status_area] = vertical.areas(area);
 
-        let horizontal = Layout::horizontal([
-            Constraint::Length(16),
-            Constraint::Min(0),
-        ]);
+        let horizontal = Layout::horizontal([Constraint::Length(16), Constraint::Min(0)]);
         let [sidebar_area, messages_area] = horizontal.areas(body_area);
 
         self.render_title_bar(f, title_area);
