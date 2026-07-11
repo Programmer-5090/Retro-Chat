@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -29,7 +29,7 @@ use crate::ChatMessage;
 
     use super::render::{
         border_style, format_gradient_title, format_system_message,
-        format_user_message, make_system_msg,
+        format_user_message, make_system_msg, username_color,
     };
 use super::types::{FocusPane, Theme, THEMES};
 
@@ -74,6 +74,10 @@ pub struct App {
     pulse_tick: u64,
     theme: Theme,
     theme_idx: usize,
+    online_users: HashSet<String>,
+    typing_users: HashMap<String, (String, Instant)>,
+    last_keypress: Instant,
+    last_typing_sent: Instant,
 }
 
 impl App {
@@ -107,6 +111,10 @@ impl App {
             pulse_tick: 0,
             theme: *default_theme,
             theme_idx: 0,
+            online_users: HashSet::new(),
+            typing_users: HashMap::new(),
+            last_keypress: Instant::now(),
+            last_typing_sent: Instant::now(),
         }
     }
 
@@ -161,6 +169,37 @@ impl App {
                 self.sparkline_data.pop_front();
                 last_sparkline_tick = now;
             }
+
+            // Typing indicator debounce
+            let now = Instant::now();
+            let since_keypress = now - self.last_keypress;
+            let since_typing_sent = now - self.last_typing_sent;
+            let input_text = self.textarea.lines().first().cloned().unwrap_or_default();
+            if self.focus == FocusPane::Input
+                && since_keypress < Duration::from_secs(2)
+                && since_typing_sent > Duration::from_secs(3)
+            {
+                let wire = if input_text.starts_with('/') {
+                    // Only send typing for /dm composition, not other commands
+                    input_text.strip_prefix("/dm ")
+                        .and_then(|s| s.split_whitespace().next())
+                        .filter(|t| !t.is_empty())
+                        .map(|target| {
+                            let mut users = vec![self.username.clone(), target.to_string()];
+                            users.sort();
+                            format!("/typing __dm__{}\n", users.join("_"))
+                        })
+                        .unwrap_or_default()
+                } else {
+                    format!("/typing {}\n", self.current_room)
+                };
+                if !wire.is_empty() {
+                    let _ = self.writer.lock().await.write_all(wire.as_bytes()).await;
+                    self.last_typing_sent = now;
+                }
+            }
+            // Clean stale typing indicators
+            self.typing_users.retain(|_, (_, t)| now - *t < Duration::from_secs(4));
 
             if event::poll(Duration::from_millis(16))? {
                 if let Event::Key(key) = event::read()? {
@@ -307,6 +346,7 @@ impl App {
                     let text = self.textarea.lines().first().cloned().unwrap_or_default();
                     self.textarea.select_all();
                     self.textarea.cut();
+                    self.last_keypress = Instant::now();
                     self.send_or_command(text).await;
                 }
                 KeyCode::Char(_) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -318,6 +358,7 @@ impl App {
                         .unwrap_or(0);
                     if current_len < 500 {
                         self.textarea.input(key);
+                        self.last_keypress = Instant::now();
                     }
                 }
                 | KeyCode::Backspace
@@ -508,8 +549,30 @@ impl App {
                         }
                     }
                 }
+                MessageType::TypingNotification => {
+                    if msg.username != self.username {
+                        let room = if msg.room.is_empty() { self.current_room.clone() } else { msg.room.clone() };
+                        self.typing_users.insert(msg.username.clone(), (room, Instant::now()));
+                    }
+                }
+                MessageType::PresenceSync => {
+                    for u in msg.content.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                        self.online_users.insert(u.to_string());
+                    }
+                }
                 MessageType::SystemNotification => {
                     let read = msg.room.is_empty() || msg.room == self.current_room;
+                    if !msg.is_history {
+                        match msg.content.as_str() {
+                            "Joined the chat" => {
+                                self.online_users.insert(msg.username.clone());
+                            }
+                            "Left the chat" => {
+                                self.online_users.remove(&msg.username);
+                            }
+                            _ => {}
+                        }
+                    }
                     self.ingest_msg(msg, read);
                 }
             }
@@ -608,11 +671,15 @@ impl App {
                     } else {
                         self.theme.secondary
                     };
-                    format_user_message(msg, color, self.theme.accent)
+                    let dot_color = (msg.username != self.username && self.online_users.contains(&msg.username))
+                        .then(|| username_color(&msg.username));
+                    format_user_message(msg, color, self.theme.accent, dot_color)
                 }
                 MessageType::SystemNotification => format_system_message(msg, self.theme.accent),
                 MessageType::RoomList => unreachable!(),
                 MessageType::ReadReceipt => unreachable!(),
+                MessageType::PresenceSync => unreachable!(),
+                MessageType::TypingNotification => unreachable!(),
             })
             .collect();
 
@@ -680,10 +747,32 @@ impl App {
                 format!(" \u{25CF}{} ", names.join(" \u{25CF}"))
             }
         };
-        let label = format!(
-            "F1:rooms  \u{2191}\u{2193}:scroll  Tab:focus{}",
-            unread_str
-        );
+        let typing_text = {
+            let names: Vec<&str> = self.typing_users.iter()
+                .filter(|(_, (r, _))| r == &self.current_room || r.starts_with("__dm__"))
+                .map(|(u, _)| u.as_str())
+                .collect();
+            if names.is_empty() {
+                String::new()
+            } else if names.len() == 1 {
+                let dots = match (self.pulse_tick / 10) % 4 {
+                    0 => ".",
+                    1 => "..",
+                    2 => "...",
+                    _ => "",
+                };
+                format!(" {} is typing{} ", names[0], dots)
+            } else if names.len() <= 3 {
+                format!(" {} and others are typing... ", names.join(", "))
+            } else {
+                format!(" Several people are typing... ")
+            }
+        };
+        let label = if typing_text.is_empty() {
+            format!("F1:rooms  \u{2191}\u{2193}:scroll  Tab:focus{}", unread_str)
+        } else {
+            typing_text
+        };
         let status = Paragraph::new(label).style(Style::default().fg(Color::DarkGray));
         f.render_widget(status, area);
         if area.width >= 42 {

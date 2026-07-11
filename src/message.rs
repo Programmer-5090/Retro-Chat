@@ -32,6 +32,12 @@ pub enum MessageType {
     /// more messages in a room. `content` is a comma-separated list of
     /// message ids that are now considered read; `username` is the reader.
     ReadReceipt,
+    /// Sent by the server to tell clients who is currently online (from Redis
+    /// presence keys). `content` is a comma-separated list of usernames.
+    PresenceSync,
+    /// Broadcast by the server while a user is typing in a room. Receiving
+    /// clients show an animated indicator. The sender skips it.
+    TypingNotification,
 }
 
 /// Generates a short random id to tag a chat message with, so read

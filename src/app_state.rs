@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{ mpsc, RwLock };
 use sqlx::{ Pool, Postgres };
 
@@ -9,6 +10,7 @@ pub struct AppState {
     pub user_senders: RwLock<HashMap<String, mpsc::UnboundedSender<String>>>,
     pub pool: Pool<Postgres>,
     pub redis_client: redis::Client,
+    presence_cache: RwLock<(Instant, Vec<String>)>,
 }
 
 impl AppState {
@@ -19,6 +21,7 @@ impl AppState {
             user_senders: RwLock::new(HashMap::new()),
             pool,
             redis_client,
+            presence_cache: RwLock::new((Instant::now(), Vec::new())),
         })
     }
 
@@ -67,6 +70,40 @@ impl AppState {
         for (_, members) in rooms.iter_mut() {
             members.retain(|(name, _)| name != username);
         }
+    }
+
+    pub async fn get_room_users(&self, room: &str) -> Vec<String> {
+        let rooms = self.rooms.read().await;
+        rooms.get(room)
+            .map(|members| members.iter().map(|(name, _)| name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Returns the list of currently online users by querying Redis
+    /// `presence:*` keys. Results are cached for 2 seconds to avoid
+    /// hammering Redis on every client connection.
+    pub async fn get_online_users(&self) -> Vec<String> {
+        {
+            let cache = self.presence_cache.read().await;
+            if cache.0.elapsed().as_secs() < 2 {
+                return cache.1.clone();
+            }
+        }
+        let mut cache = self.presence_cache.write().await;
+        if cache.0.elapsed().as_secs() < 2 {
+            return cache.1.clone();
+        }
+        let mut conn = self.redis_client.get_connection().unwrap();
+        let keys: Vec<String> = redis::cmd("KEYS")
+            .arg("presence:*")
+            .query(&mut conn)
+            .unwrap_or_default();
+        let users: Vec<String> = keys
+            .into_iter()
+            .filter_map(|k| k.strip_prefix("presence:").map(|u| u.to_string()))
+            .collect();
+        *cache = (Instant::now(), users.clone());
+        users
     }
 
     pub async fn send_to_room(&self, room: &str, msg: &str) {

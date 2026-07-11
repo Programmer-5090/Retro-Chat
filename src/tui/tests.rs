@@ -189,7 +189,7 @@ fn test_mention_highlighting() {
         room: String::new(),
         is_history: false,
     };
-    let lines = format_user_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan);
+    let lines = format_user_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan, None);
     let rendered: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
     assert!(rendered.contains("@bob"), "rendered should contain @bob");
     assert!(rendered.contains("hi "), "rendered should contain 'hi '");
@@ -216,7 +216,7 @@ fn test_mention_highlighting() {
 proptest! {
     #[test]
     fn prop_user_message_format(msg in arb_chat_message().prop_filter("must be UserMessage", |m| matches!(m.message_type, MessageType::UserMessage))) {
-        let lines = format_user_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan);
+        let lines = format_user_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan, None);
         let rendered: String = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(rendered.contains(&msg.username), "missing username");
         assert!(rendered.contains("\u{25B6}"), "missing ▶ separator");

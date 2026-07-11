@@ -561,6 +561,7 @@ async fn cleanup_disconnect(
 ) {
     let _: Result<usize, _> = redis_conn.del(format!("presence:{}", username));
     let user_room = state.get_user_room(username).await;
+    let _ = redis_conn.del::<_, usize>(format!("typing:{}:{}", user_room, username));
     if !user_room.starts_with("__dm__") {
         let leave_msg = ChatMessage {
             id: String::new(),
@@ -658,6 +659,44 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
     let join_json = serde_json::to_string(&join_msg).unwrap();
     state.send_to_room(&current_room, &join_json).await;
 
+    // Tell the newly-connected client who's online globally (from Redis).
+    let online: Vec<String> = state.get_online_users().await
+        .into_iter().filter(|u| u != &username).collect();
+    let sync_msg = ChatMessage {
+        id: String::new(),
+        username: String::new(),
+        content: online.join(","),
+        timestamp: Local::now().format("%H:%M:%S").to_string(),
+        message_type: MessageType::PresenceSync,
+        room: current_room.clone(),
+        is_history: false,
+    };
+    let sync_json = serde_json::to_string(&sync_msg).unwrap();
+    let _ = out_tx.send(sync_json);
+
+    // Sync current typing state from Redis
+    let typing_keys: Vec<String> = redis::cmd("KEYS")
+        .arg(format!("typing:{}:*", current_room))
+        .query(&mut redis_conn)
+        .unwrap_or_default();
+    for key in &typing_keys {
+        if let Some(u) = key.strip_prefix(&format!("typing:{}:", current_room)) {
+            if u != username {
+                let t_msg = ChatMessage {
+                    id: String::new(),
+                    username: u.to_string(),
+                    content: String::new(),
+                    timestamp: Local::now().format("%H:%M:%S").to_string(),
+                    message_type: MessageType::TypingNotification,
+                    room: current_room.clone(),
+                    is_history: false,
+                };
+                let t_json = serde_json::to_string(&t_msg).unwrap();
+                let _ = out_tx.send(t_json);
+            }
+        }
+    }
+
     let mut line = String::new();
     loop {
         tokio::select! {
@@ -692,6 +731,31 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                         handle_ban_command(&state, &mut writer, &username, &user_role, args).await;
                     } else if let Some(args) = input.strip_prefix("/unban ") {
                         handle_unban_command(&state, &mut writer, &username, &user_role, args).await;
+                    } else if input.starts_with("/typing") {
+                        let room = if let Some(r) = input.strip_prefix("/typing ")
+                            .and_then(|r| {
+                                let t = r.trim();
+                                if t.is_empty() { None } else { Some(t.to_string()) }
+                            }) {
+                            r
+                        } else {
+                            state.get_last_room(&username).await.unwrap_or_else(|| "general".to_string())
+                        };
+                        let _: () = redis_conn.set_ex(
+                            format!("typing:{}:{}", room, username),
+                            "1", 10,
+                        ).unwrap();
+                        let typing_msg = ChatMessage {
+                            id: String::new(),
+                            username: username.clone(),
+                            content: String::new(),
+                            timestamp: Local::now().format("%H:%M:%S").to_string(),
+                            message_type: MessageType::TypingNotification,
+                            room: room.clone(),
+                            is_history: false,
+                        };
+                        let typing_json = serde_json::to_string(&typing_msg).unwrap();
+                        state.send_to_room(&room, &typing_json).await;
                     } else if input == "/help" {
                         send_notice(&mut writer, "Commands: /join <room>, /rooms, /msg <user> <text>, /help | Admin: /mute, /unmute, /ban, /unban").await;
                     } else {

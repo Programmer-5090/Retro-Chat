@@ -1,3 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -23,6 +26,34 @@ pub fn border_style(pane: FocusPane, focus: FocusPane, pulse_tick: u64, theme: &
     } else {
         Style::default().fg(theme.primary)
     }
+}
+
+pub fn username_color(username: &str) -> Color {
+    let mut hasher = DefaultHasher::new();
+    username.hash(&mut hasher);
+    let h = hasher.finish() as f64 / u64::MAX as f64;
+    let hue = h * 360.0;
+    let (r, g, b) = hsl_to_rgb(hue, 0.8, 0.6);
+    Color::Rgb(r, g, b)
+}
+
+fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r1, g1, b1) = match h as i32 % 360 {
+        0..=59 => (c, x, 0.0),
+        60..=119 => (x, c, 0.0),
+        120..=179 => (0.0, c, x),
+        180..=239 => (0.0, x, c),
+        240..=299 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    (
+        ((r1 + m) * 255.0) as u8,
+        ((g1 + m) * 255.0) as u8,
+        ((b1 + m) * 255.0) as u8,
+    )
 }
 
 pub fn format_gradient_title(username: &str) -> Line<'static> {
@@ -68,17 +99,21 @@ fn highlight_mentions(text: &str, base_color: Color, mention_color: Color) -> Ve
     spans
 }
 
-pub fn format_user_message(msg: &ChatMessage, color: Color, mention_color: Color) -> Vec<Line<'static>> {
+pub fn format_user_message(msg: &ChatMessage, color: Color, mention_color: Color, dot_color: Option<Color>) -> Vec<Line<'static>> {
     let timestamp = msg.timestamp.chars().take(5).collect::<String>();
     let ts_span = Span::styled(
         format!("[{}] ", timestamp),
         Style::default().fg(color),
     );
+    let dot_span = dot_color.map(|dc| {
+        Span::styled("\u{25CF} ", Style::default().fg(dc))
+    });
     let user_span = Span::styled(
         format!("{} \u{25B6} ", msg.username.clone()),
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     );
-    let indent = " ".repeat(timestamp.len() + msg.username.len() + 5);
+    let dot_extra = dot_span.as_ref().map(|_| 2u16).unwrap_or(0);
+    let indent = " ".repeat(timestamp.len() + msg.username.len() + 5 + dot_extra as usize);
     let indent_span = Span::styled(indent, Style::default().fg(color));
     let mut lines: Vec<Line<'static>> = msg.content
         .lines()
@@ -86,7 +121,11 @@ pub fn format_user_message(msg: &ChatMessage, color: Color, mention_color: Color
         .map(|(i, line)| {
             let content_spans = highlight_mentions(line, color, mention_color);
             if i == 0 {
-                let mut spans = vec![ts_span.clone(), user_span.clone()];
+                let mut spans = vec![ts_span.clone()];
+                if let Some(ref dot) = dot_span {
+                    spans.push(dot.clone());
+                }
+                spans.push(user_span.clone());
                 spans.extend(content_spans);
                 Line::from(spans)
             } else {
@@ -97,7 +136,12 @@ pub fn format_user_message(msg: &ChatMessage, color: Color, mention_color: Color
         })
         .collect();
     if lines.is_empty() {
-        lines.push(Line::from(vec![ts_span, user_span]));
+        let mut spans = vec![ts_span];
+        if let Some(dot) = dot_span {
+            spans.push(dot);
+        }
+        spans.push(user_span);
+        lines.push(Line::from(spans));
     }
     lines
 }
