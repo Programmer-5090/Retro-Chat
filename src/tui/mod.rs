@@ -1,7 +1,7 @@
 mod types;
 mod app;
 mod render;
-mod cube_bg;
+mod cube_anim;
 mod login;
 
 pub use app::run_chat_ui;

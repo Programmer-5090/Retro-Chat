@@ -28,7 +28,7 @@ use super::render::{
     make_system_msg,
     username_color,
 };
-use super::cube_bg::SpinningCube;
+use super::cube_anim::SpinningCube;
 use super::types::{ FocusPane, Theme, THEMES };
 
 pub async fn run_chat_ui(
@@ -638,7 +638,19 @@ impl App {
     }
 
     fn render_title_bar(&self, f: &mut Frame, area: Rect) {
-        let title = format_title(&self.username, self.theme.primary);
+        let pulse = |c: Color| -> Color {
+            if let Color::Rgb(r, g, b) = c {
+                let f = 0.6 + 0.4 * ((self.pulse_tick as f64) * 0.04).sin();
+                Color::Rgb(
+                    (r as f64 * f) as u8,
+                    (g as f64 * f) as u8,
+                    (b as f64 * f) as u8,
+                )
+            } else {
+                c
+            }
+        };
+        let title = format_title(&self.username, pulse(self.theme.primary));
         let widget = Paragraph::new(title)
             .style(Style::default())
             .alignment(ratatui::layout::Alignment::Center);
