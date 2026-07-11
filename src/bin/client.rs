@@ -1,10 +1,9 @@
-use std::{ env, error::Error, io::{ self, Write } };
-use tokio::{ io::{ AsyncBufReadExt, AsyncWriteExt, BufReader }, net::TcpStream };
+use std::{ env, error::Error };
+use tokio::{ io::AsyncWriteExt, net::TcpStream };
 use crossterm::terminal::disable_raw_mode;
 
 use retro_chat::client_helpers::{ ClientStream, create_tls_connector };
-use retro_chat::tui::run_chat_ui;
-use retro_chat::ChatMessage;
+use retro_chat::tui::{ run_chat_ui, run_login_ui };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -33,45 +32,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     writer.write_all(format!("{}\n", username).as_bytes()).await?;
 
-    let mut reader = BufReader::new(reader);
-    let mut buf = String::new();
+    let reader = tokio::io::BufReader::new(reader);
 
-    loop {
-        buf.clear();
-        reader.read_line(&mut buf).await?;
-        if buf.is_empty() {
-            break;
-        }
-        let msg = match serde_json::from_str::<ChatMessage>(buf.trim()) {
-            Ok(m) => m,
-            Err(_) => {
-                continue;
-            }
-        };
-        if msg.username != "Server" {
-            continue;
-        }
-        println!("{}", msg.content);
-        if msg.content.contains("Token:") {
-            break;
-        }
-        print!("Enter password: ");
-        io::stdout().flush()?;
-        let mut password = String::new();
-        io::stdin().read_line(&mut password)?;
-        let password = password.trim().to_string();
-        let password = password
-            .strip_prefix("/register ")
-            .or(password.strip_prefix("/login "))
-            .unwrap_or(&password)
-            .to_string();
-        let cmd = if msg.content.contains("Register") {
-            format!("/register {}\n", password)
-        } else {
-            format!("/login {}\n", password)
-        };
-        writer.write_all(cmd.as_bytes()).await?;
-    }
+    // Shows the ByteChat splash screen, then collects the register/login
+    // password inside the same terminal UI before handing off to the chat.
+    let (reader, writer) = run_login_ui(reader, writer).await?;
 
     run_chat_ui(username, reader, writer).await
 }

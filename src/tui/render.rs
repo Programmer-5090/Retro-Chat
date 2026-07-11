@@ -49,10 +49,15 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
     (((r1 + m) * 255.0) as u8, ((g1 + m) * 255.0) as u8, ((b1 + m) * 255.0) as u8)
 }
 
-pub fn format_gradient_title(username: &str) -> Line<'static> {
-    let text = format!("  RETRO CHAT \u{2014} @{}  ", username);
-    let line = format!("{}\u{2580}{}\u{2580}{}", "\u{2588}".repeat(2), text, "\u{2588}".repeat(2));
-    Line::from(Span::styled(line, Style::default().fg(Color::Rgb(0, 200, 0))))
+pub fn format_title(username: &str, color: Color) -> Line<'static> {
+    let text = format!("@{}", username);
+    let line = format!(
+        "{}{}{}",
+        "\u{28FF}".repeat(4),
+        text,
+        "\u{28FF}".repeat(4),
+    );
+    Line::from(Span::styled(line, Style::default().fg(color)))
 }
 
 fn highlight_mentions(text: &str, base_color: Color, mention_color: Color) -> Vec<Span<'static>> {

@@ -22,12 +22,13 @@ use crate::ChatMessage;
 
 use super::render::{
     border_style,
-    format_gradient_title,
+    format_title,
     format_system_message,
     format_user_message,
     make_system_msg,
     username_color,
 };
+use super::cube_bg::SpinningCube;
 use super::types::{ FocusPane, Theme, THEMES };
 
 pub async fn run_chat_ui(
@@ -75,6 +76,8 @@ pub struct App {
     typing_users: HashMap<String, (String, Instant)>,
     last_keypress: Instant,
     last_typing_sent: Instant,
+    cube: SpinningCube,
+    start_time: Instant,
 }
 
 impl App {
@@ -112,6 +115,8 @@ impl App {
             typing_users: HashMap::new(),
             last_keypress: Instant::now(),
             last_typing_sent: Instant::now(),
+            cube: SpinningCube::new(),
+            start_time: Instant::now(),
         }
     }
 
@@ -341,6 +346,7 @@ impl App {
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.theme_idx = (self.theme_idx + 1) % THEMES.len();
                 self.theme = THEMES[self.theme_idx];
+                self.cube.color = self.theme.primary;
                 self.textarea.set_style(Style::default().fg(self.theme.primary).bg(self.theme.bg));
                 self.textarea.set_cursor_style(Style::default().bg(self.theme.primary));
                 return;
@@ -632,7 +638,7 @@ impl App {
     }
 
     fn render_title_bar(&self, f: &mut Frame, area: Rect) {
-        let title = format_gradient_title(&self.username);
+        let title = format_title(&self.username, self.theme.primary);
         let widget = Paragraph::new(title)
             .style(Style::default())
             .alignment(ratatui::layout::Alignment::Center);
@@ -670,7 +676,7 @@ impl App {
             .border_style(
                 border_style(FocusPane::Sidebar, self.focus, self.pulse_tick, &self.theme)
             )
-            .title(" Rooms ");
+            .title(" Messages ");
 
         let paragraph = Paragraph::new(lines)
             .block(block)
@@ -724,13 +730,36 @@ impl App {
             .border_style(
                 border_style(FocusPane::Messages, self.focus, self.pulse_tick, &self.theme)
             )
-            .title(" Messages ");
+            .title(format!(" #{} ", self.current_room));
 
         let paragraph = Paragraph::new(lines)
             .block(block)
             .wrap(Wrap { trim: false })
             .scroll((render_scroll, 0));
         f.render_widget(paragraph, area);
+    }
+
+    fn render_animations(&mut self, f: &mut Frame, area: Rect) {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .border_style(Style::default().fg(self.theme.primary))
+            .title(" Animation ");
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        // Square portion for the cube (cell aspect ~1:2 w:h)
+        let cube_w = (inner.height * 2).min(inner.width);
+        let x_off = (inner.width.saturating_sub(cube_w)) / 2;
+        let cube_area = Rect {
+            x: inner.x + x_off,
+            y: inner.y,
+            width: cube_w,
+            height: inner.height,
+        };
+
+        let t = self.start_time.elapsed().as_secs_f64();
+        self.cube.render(f, cube_area, t);
     }
 
     fn render_input(&mut self, f: &mut Frame, area: Rect) {
@@ -816,7 +845,7 @@ impl App {
     fn render(&mut self, f: &mut Frame) {
         let area = f.area();
 
-        if area.width < 17 || area.height < 6 {
+        if area.width < 17 || area.height < 12 {
             let msg = Paragraph::new("Terminal too small \u{2014} please resize").style(
                 Style::default().fg(self.theme.primary).bg(self.theme.bg)
             );
@@ -833,11 +862,16 @@ impl App {
         let [title_area, body_area, input_area, status_area] = vertical.areas(area);
 
         let horizontal = Layout::horizontal([Constraint::Length(16), Constraint::Min(0)]);
-        let [sidebar_area, messages_area] = horizontal.areas(body_area);
+        let [sidebar_col, messages_area] = horizontal.areas(body_area);
+
+        // Sidebar column: Rooms on top, small Animation box underneath.
+        let sidebar_vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(6)]);
+        let [sidebar_area, anim_area] = sidebar_vertical.areas(sidebar_col);
 
         self.render_title_bar(f, title_area);
         self.render_sidebar(f, sidebar_area);
         self.render_messages(f, messages_area);
+        self.render_animations(f, anim_area);
         self.render_input(f, input_area);
         self.render_status_bar(f, status_area);
     }

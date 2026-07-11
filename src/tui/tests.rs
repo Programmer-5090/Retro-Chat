@@ -4,7 +4,7 @@ use super::types::{ FocusPane, THEMES, UiAppState };
 use ratatui::style::Color;
 use super::render::{
     border_style,
-    format_gradient_title,
+    format_title,
     format_user_message,
     format_system_message,
 };
@@ -165,13 +165,12 @@ proptest! {
     }
 }
 
-// Title bar contains username and app name
+// Title bar contains the username
 proptest! {
     #[test]
     fn prop_title_contains_username(username in "[a-zA-Z0-9_]{1,32}") {
-        let line = format_gradient_title(&username);
+        let line = format_title(&username, Color::Rgb(0, 200, 0));
         let title: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(title.contains("RETRO CHAT"), "title missing app name: {title}");
         assert!(title.contains(&format!("@{}", username)), "title missing username: {title}");
     }
 }

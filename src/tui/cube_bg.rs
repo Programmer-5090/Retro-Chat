@@ -31,7 +31,7 @@ pub struct SpinningCube {
 impl SpinningCube {
     pub fn new() -> Self {
         Self {
-            scale: 6.0,
+            scale: 25.0,
             // dim amber so it reads as "background", not foreground content
             color: THEMES[0].primary,
         }
@@ -42,17 +42,36 @@ impl SpinningCube {
     pub fn render(&self, frame: &mut Frame, area: Rect, t: f64) {
         let (ax, ay, az) = (t * 0.6, t * 0.9, t * 0.3);
         let rotated: Vec<[f64; 3]> = VERTS.iter().map(|v| rotate(*v, ax, ay, az)).collect();
+        let projected: Vec<(f64, f64)> = rotated
+            .iter()
+            .map(|v| project(v[0], v[1], v[2], self.scale))
+            .collect();
+
+        // Fit the camera bounds to the cube's current projected extent (plus a
+        // small margin) instead of hard-coding them to `self.scale`. Bounds
+        // equal to `scale` while the projection factor is also driven by
+        // `scale` cancel each other out, so the cube always occupied the same
+        // small fraction of the box no matter how big `scale` was.
+        let max_extent = projected
+            .iter()
+            .fold(0.0_f64, |m, (x, y)| m.max(x.abs()).max(y.abs()))
+            .max(1.0);
+        let half_x = max_extent * 1.25;
+
+        // Keep the cube visually square by accounting for terminal cell aspect
+        // (Braille: 2 dots wide, 4 dots tall per cell)
+        let w = area.width.max(1) as f64;
+        let h = area.height.max(1) as f64;
+        let half_y = half_x * (2.0 * h) / w; // compensate for cell dot ratio
 
         let canvas = Canvas::default()
             .marker(Marker::Braille)
-            .x_bounds([-10.0, 10.0])
-            .y_bounds([-10.0, 10.0])
+            .x_bounds([-half_x, half_x])
+            .y_bounds([-half_y, half_y])
             .paint(|ctx| {
                 for (a, b) in EDGES {
-                    let (x1, y1, z1) = (rotated[a][0], rotated[a][1], rotated[a][2]);
-                    let (x2, y2, z2) = (rotated[b][0], rotated[b][1], rotated[b][2]);
-                    let (px1, py1) = project(x1, y1, z1, self.scale);
-                    let (px2, py2) = project(x2, y2, z2, self.scale);
+                    let (px1, py1) = projected[a];
+                    let (px2, py2) = projected[b];
                     ctx.draw(&CanvasLine {
                         x1: px1,
                         y1: py1,
