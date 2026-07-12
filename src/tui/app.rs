@@ -603,7 +603,7 @@ impl App {
                     let read = msg.room.is_empty() || msg.room == self.current_room;
                     if !msg.is_history {
                         match msg.content.as_str() {
-                            "Joined the chat" => {
+                            "Joined the chat" | "Joined the room" => {
                                 self.online_users.insert(msg.username.clone());
                             }
                             "Left the chat" => {
@@ -867,7 +867,7 @@ impl App {
             }
         };
         let label = if typing_text.is_empty() {
-            format!("F1:rooms  \u{2191}\u{2193}:scroll  Tab:focus  Ctrl+A:anim{}", unread_str)
+            format!("F1:rooms  \u{2191}\u{2193}:scroll  Tab:focus", unread_str)
         } else {
             typing_text
         };

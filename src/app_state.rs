@@ -90,9 +90,15 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    /// Returns the list of currently online users by querying Redis
-    /// `presence:*` keys. Results are cached for 2 seconds to avoid
-    /// hammering Redis on every client connection.
+    pub async fn get_user_subscribed_rooms(&self, username: &str) -> Vec<String> {
+        let rooms = self.rooms.read().await;
+        rooms
+            .iter()
+            .filter(|(_, members)| members.iter().any(|(name, _)| name == username))
+            .map(|(room, _)| room.clone())
+            .collect()
+    }
+
     pub async fn get_online_users(&self) -> Vec<String> {
         {
             let cache = self.presence_cache.read().await;

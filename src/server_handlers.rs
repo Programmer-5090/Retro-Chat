@@ -1,6 +1,11 @@
 use std::sync::Arc;
 use std::net::SocketAddr;
-use tokio::{ io::{ AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader }, sync::mpsc };
+use std::time::Duration;
+use tokio::{
+    io::{ AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader },
+    sync::mpsc,
+    time::interval,
+};
 use chrono::Local;
 use redis::Commands;
 use argon2::{
@@ -590,19 +595,22 @@ async fn cleanup_disconnect(state: &AppState, redis_conn: &mut redis::Connection
     let _: Result<usize, _> = redis_conn.del(format!("presence:{}", username));
     let user_room = state.get_user_room(username).await;
     let _ = redis_conn.del::<_, usize>(format!("typing:{}:{}", user_room, username));
-    if !user_room.starts_with("__dm__") {
+
+    let subscribed_rooms = state.get_user_subscribed_rooms(username).await;
+    for room in &subscribed_rooms {
         let leave_msg = ChatMessage {
             id: String::new(),
             username: username.to_string(),
             content: "Left the chat".to_string(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             message_type: MessageType::SystemNotification,
-            room: user_room.clone(),
+            room: room.clone(),
             is_history: false,
         };
         let leave_json = serde_json::to_string(&leave_msg).unwrap();
-        state.send_to_room(&user_room, &leave_json).await;
+        state.send_to_room(room, &leave_json).await;
     }
+
     state.leave_all_rooms(username).await;
     state.unregister_sender(username).await;
 }
@@ -737,9 +745,20 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
         }
     }
 
+    let mut presence_heartbeat = interval(Duration::from_secs(10));
+    presence_heartbeat.tick().await; // first tick fires immediately; consume it, key is already fresh from connect
+
     let mut line = String::new();
     loop {
         tokio::select! {
+            _ = presence_heartbeat.tick() => {
+                let _: Result<(), _> = redis_conn.set_ex(
+                    format!("presence:{}", username),
+                    "online",
+                    30,
+                );
+            }
+
             result = reader.read_line(&mut line) => {
                 if result.unwrap_or(0) == 0 {
                     break;
