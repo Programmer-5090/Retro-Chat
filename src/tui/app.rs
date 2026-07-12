@@ -27,6 +27,7 @@ use tui_textarea::TextArea;
 
 use crate::client_helpers::ClientStream;
 use crate::message::MessageType;
+use crate::message::dm_display_name;
 use crate::ChatMessage;
 
 use super::render::{
@@ -664,7 +665,7 @@ impl App {
                         self.current_room = room.to_string();
                         self.mark_all_read(room).await;
                         self.scroll_offset = 0;
-                        self.ingest_msg(make_system_msg(&format!("Joined room: {}", room)), true);
+                        self.ingest_msg(make_system_msg(&format!("Joined room: {}", dm_display_name(room, &self.username))), true);
                         let msg = format!("/join {}\n", room);
                         let _ = self.writer.lock().await.write_all(msg.as_bytes()).await;
                     }
@@ -676,7 +677,7 @@ impl App {
                         self.current_room = self.rooms[0].clone();
                         let cur = self.current_room.clone();
                         self.clear_room_read_state(&cur);
-                        self.ingest_msg(make_system_msg(&format!("Left room: {}", left)), true);
+                        self.ingest_msg(make_system_msg(&format!("Left room: {}", dm_display_name(&left, &self.username))), true);
                         let _ = self.writer.lock().await.write_all(b"/leave\n").await;
                     } else {
                         self.ingest_msg(make_system_msg("Cannot leave the last room."), true);
@@ -882,7 +883,7 @@ impl App {
                 let has_unread = self.unread_rooms.contains(room);
                 let active = room == &self.current_room;
                 let prefix = if has_unread { "\u{25CF} " } else { "  " };
-                let display = format!("{}{}", prefix, room);
+                let display = format!("{}{}", prefix, dm_display_name(room, &self.username));
                 let style = if active {
                     Style::default().fg(self.theme.accent)
                 } else if has_unread {
@@ -900,7 +901,7 @@ impl App {
             .border_style(
                 border_style(FocusPane::Sidebar, self.focus, self.pulse_tick, &self.theme)
             )
-            .title(" Rooms ");
+            .title(" Messages ");
 
         let list = List::new(items)
             .block(block)
@@ -960,7 +961,7 @@ impl App {
             .border_style(
                 border_style(FocusPane::Messages, self.focus, self.pulse_tick, &self.theme)
             )
-            .title(format!(" #{} ", self.current_room));
+            .title(format!(" #{} ", dm_display_name(&self.current_room, &self.username)));
 
         let paragraph = Paragraph::new(lines)
             .block(block)
@@ -1036,10 +1037,10 @@ impl App {
         let unread_str = if self.unread_rooms.is_empty() {
             String::new()
         } else {
-            let names: Vec<&str> = self.unread_rooms
+            let names: Vec<String> = self.unread_rooms
                 .iter()
                 .filter(|r| *r != &self.current_room)
-                .map(|s| s.as_str())
+                .map(|r| dm_display_name(r, &self.username).to_string())
                 .collect();
             if names.is_empty() {
                 String::new()

@@ -19,6 +19,7 @@ use crate::{
     MessageType,
     build_notice,
     build_read_receipt,
+    dm_display_name,
     generate_message_id,
     AppState,
 };
@@ -215,7 +216,7 @@ async fn handle_leave_command(
     let fallback = state.get_last_room(username).await.unwrap_or_else(|| "general".to_string());
     state.subscribe_room(username, &fallback, out_tx.clone()).await;
     state.set_active_room(username, &fallback).await;
-    send_notice(writer, &format!("Left '{}'. Now in '{}'.", current_room, fallback)).await;
+    send_notice(writer, &format!("Left '{}'. Now in '{}'.", dm_display_name(&current_room, username), dm_display_name(&fallback, username))).await;
     replay_history(state, &fallback, out_tx).await;
     send_room_list(state, username, out_tx).await;
 }
@@ -272,7 +273,7 @@ async fn handle_join_command(
     state.subscribe_room(username, room_name, out_tx.clone()).await;
     state.set_active_room(username, room_name).await;
     state.save_room_membership(username, room_name).await;
-    send_notice(writer, &format!("Joined room '{}'.", room_name)).await;
+    send_notice(writer, &format!("Joined room '{}'.", dm_display_name(room_name, username))).await;
     replay_history(state, room_name, out_tx).await;
     send_room_list(state, username, out_tx).await;
 
