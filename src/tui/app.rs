@@ -3,7 +3,9 @@ use std::{ collections::{ HashMap, HashSet, VecDeque }, sync::Arc, time::{ Durat
 use crossterm::{
     event::{
         self,
+        DisableBracketedPaste,
         DisableMouseCapture,
+        EnableBracketedPaste,
         EnableMouseCapture,
         Event,
         KeyEventKind,
@@ -57,7 +59,7 @@ impl Drop for CleanGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
         let mut stdout = std::io::stdout();
-        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste);
     }
 }
 
@@ -179,7 +181,7 @@ impl App {
         enable_raw_mode()?;
         let _guard = CleanGuard;
         let mut stdout = std::io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
         tokio::spawn(async move {
@@ -270,6 +272,21 @@ impl App {
                     }
                     Event::Mouse(mouse) => {
                         self.handle_mouse(mouse).await;
+                    }
+                    Event::Paste(data) => {
+                        if self.focus == FocusPane::Input {
+                            let text = data.lines().next().unwrap_or(&data);
+                            let current_len = self.textarea
+                                .lines()
+                                .first()
+                                .map(|l| l.len())
+                                .unwrap_or(0);
+                            let paste_len = text.len();
+                            if current_len + paste_len <= 500 {
+                                self.textarea.insert_str(text);
+                                self.last_keypress = Instant::now();
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -659,14 +676,28 @@ impl App {
                             true
                         );
                     } else {
-                        if !self.rooms.iter().any(|r| r == room) {
-                            self.rooms.push(room.to_string());
+                        // If a DM room with this user already exists, jump to it
+                        // instead of creating a new regular room.
+                        let resolved = if !room.starts_with("__dm__") {
+                            let mut dm_users = vec![self.username.clone(), room.to_string()];
+                            dm_users.sort();
+                            let dm_room = format!("__dm__{}", dm_users.join("_"));
+                            if self.rooms.iter().any(|r| r == &dm_room) {
+                                dm_room
+                            } else {
+                                room.to_string()
+                            }
+                        } else {
+                            room.to_string()
+                        };
+                        if !self.rooms.iter().any(|r| r == &resolved) {
+                            self.rooms.push(resolved.clone());
                         }
-                        self.current_room = room.to_string();
-                        self.mark_all_read(room).await;
+                        self.current_room = resolved.clone();
+                        self.mark_all_read(&resolved).await;
                         self.scroll_offset = 0;
-                        self.ingest_msg(make_system_msg(&format!("Joined room: {}", dm_display_name(room, &self.username))), true);
-                        let msg = format!("/join {}\n", room);
+                        self.ingest_msg(make_system_msg(&format!("Joined room: {}", dm_display_name(&resolved, &self.username))), true);
+                        let msg = format!("/join {}\n", resolved);
                         let _ = self.writer.lock().await.write_all(msg.as_bytes()).await;
                     }
                 }
