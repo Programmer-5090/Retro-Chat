@@ -1,7 +1,16 @@
 use std::{ collections::{ HashMap, HashSet, VecDeque }, sync::Arc, time::{ Duration, Instant } };
 
 use crossterm::{
-    event::{ self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind },
+    event::{
+        self,
+        DisableMouseCapture,
+        EnableMouseCapture,
+        Event,
+        KeyEventKind,
+        MouseButton,
+        MouseEvent,
+        MouseEventKind,
+    },
     execute,
     terminal::{ EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode },
 };
@@ -9,9 +18,9 @@ use ratatui::{
     Frame,
     layout::{ Constraint, Layout, Rect },
     prelude::{ CrosstermBackend, Terminal },
-    style::{ Color, Style },
+    style::{ Color, Modifier, Style },
     symbols::border,
-    widgets::{ Block, Borders, Paragraph, Sparkline, Wrap },
+    widgets::{ Block, Borders, Clear, List, ListItem, ListState, Paragraph, Sparkline, Wrap },
 };
 use tokio::{ io::{ AsyncBufReadExt, AsyncWriteExt, BufReader }, sync::{ Mutex, mpsc } };
 use tui_textarea::TextArea;
@@ -62,7 +71,12 @@ pub struct App {
     pub writer: Arc<Mutex<tokio::io::WriteHalf<ClientStream>>>,
     pub should_quit: bool,
     pub server_rx: mpsc::UnboundedReceiver<String>,
-    sidebar_scroll: usize,
+    sidebar_state: ListState,
+    sidebar_area: Rect,
+    messages_area: Rect,
+    show_help: bool,
+    help_state: ListState,
+    help_area: Rect,
     unread_rooms: HashSet<String>,
     /// Ids of your own messages that the recipient has read (per the
     /// ReadReceipt broadcasts), rendered in the "read" color.
@@ -86,6 +100,19 @@ pub struct App {
 }
 
 impl App {
+    /// (display command, description, text inserted into the input box
+    /// when picked from the `/help` popup). Argument-taking commands insert
+    /// a trailing space so the cursor lands ready to type the argument.
+    const HELP_COMMANDS: [(&'static str, &'static str, &'static str); 7] = [
+        ("/join <room>", "join a room", "/join "),
+        ("/leave", "leave current room", "/leave"),
+        ("/rooms", "list server rooms", "/rooms"),
+        ("/dm <user> <msg>", "send a direct message", "/dm "),
+        ("/clear", "clear messages", "/clear"),
+        ("/help", "show this help", "/help"),
+        ("/quit", "quit", "/quit"),
+    ];
+
     fn new(
         username: String,
         writer: tokio::io::WriteHalf<ClientStream>,
@@ -108,7 +135,12 @@ impl App {
             textarea: ta,
             writer: Arc::new(Mutex::new(writer)),
             server_rx,
-            sidebar_scroll: 0,
+            sidebar_state: ListState::default().with_selected(Some(0)),
+            sidebar_area: Rect::default(),
+            messages_area: Rect::default(),
+            show_help: false,
+            help_state: ListState::default().with_selected(Some(0)),
+            help_area: Rect::default(),
             unread_rooms: HashSet::new(),
             read_message_ids: HashSet::new(),
             message_times: VecDeque::new(),
@@ -221,10 +253,16 @@ impl App {
             self.typing_users.retain(|_, (_, t)| now - *t < Duration::from_secs(4));
 
             if event::poll(Duration::from_millis(16))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        self.handle_key(key).await;
+                match event::read()? {
+                    Event::Key(key) => {
+                        if key.kind == KeyEventKind::Press {
+                            self.handle_key(key).await;
+                        }
                     }
+                    Event::Mouse(mouse) => {
+                        self.handle_mouse(mouse).await;
+                    }
+                    _ => {}
                 }
             }
             loop {
@@ -336,6 +374,11 @@ impl App {
     async fn handle_key(&mut self, key: event::KeyEvent) {
         use crossterm::event::{ KeyCode, KeyModifiers };
 
+        if self.show_help {
+            self.handle_help_key(key).await;
+            return;
+        }
+
         match key.code {
             KeyCode::Esc => {
                 self.should_quit = true;
@@ -414,16 +457,157 @@ impl App {
             FocusPane::Sidebar => {
                 let max = self.rooms.len().saturating_sub(1);
                 match key.code {
-                    KeyCode::Up if self.sidebar_scroll > 0 => {
-                        self.sidebar_scroll -= 1;
+                    KeyCode::Up => {
+                        let i = self.sidebar_state.selected().unwrap_or(0);
+                        self.sidebar_state.select(Some(i.saturating_sub(1)));
                     }
-                    KeyCode::Down if self.sidebar_scroll < max => {
-                        self.sidebar_scroll += 1;
+                    KeyCode::Down => {
+                        let i = self.sidebar_state.selected().unwrap_or(0);
+                        self.sidebar_state.select(Some((i + 1).min(max)));
+                    }
+                    KeyCode::Enter => {
+                        if let Some(i) = self.sidebar_state.selected() {
+                            self.select_room(i).await;
+                        }
                     }
                     _ => {}
                 }
             }
         }
+    }
+
+    async fn handle_help_key(&mut self, key: event::KeyEvent) {
+        use crossterm::event::KeyCode;
+
+        let max = Self::HELP_COMMANDS.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Esc => {
+                self.show_help = false;
+            }
+            KeyCode::Up => {
+                let i = self.help_state.selected().unwrap_or(0);
+                self.help_state.select(Some(i.saturating_sub(1)));
+            }
+            KeyCode::Down => {
+                let i = self.help_state.selected().unwrap_or(0);
+                self.help_state.select(Some((i + 1).min(max)));
+            }
+            KeyCode::Enter => {
+                if let Some(i) = self.help_state.selected() {
+                    self.apply_help_selection(i);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.show_help {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(i) = self.help_row_at(mouse.column, mouse.row) {
+                        self.apply_help_selection(i);
+                    } else if !Self::rect_contains(self.help_area, mouse.column, mouse.row) {
+                        self.show_help = false;
+                    }
+                }
+                MouseEventKind::ScrollUp => {
+                    let i = self.help_state.selected().unwrap_or(0);
+                    self.help_state.select(Some(i.saturating_sub(1)));
+                }
+                MouseEventKind::ScrollDown => {
+                    let max = Self::HELP_COMMANDS.len().saturating_sub(1);
+                    let i = self.help_state.selected().unwrap_or(0);
+                    self.help_state.select(Some((i + 1).min(max)));
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if Self::rect_contains(self.sidebar_area, mouse.column, mouse.row) {
+                    self.focus = FocusPane::Sidebar;
+                    if let Some(i) = self.sidebar_row_at(mouse.column, mouse.row) {
+                        self.select_room(i).await;
+                    }
+                } else if Self::rect_contains(self.messages_area, mouse.column, mouse.row) {
+                    self.focus = FocusPane::Messages;
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if Self::rect_contains(self.sidebar_area, mouse.column, mouse.row) {
+                    let i = self.sidebar_state.selected().unwrap_or(0);
+                    self.sidebar_state.select(Some(i.saturating_sub(1)));
+                } else {
+                    self.scroll_up(20);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if Self::rect_contains(self.sidebar_area, mouse.column, mouse.row) {
+                    let max = self.rooms.len().saturating_sub(1);
+                    let i = self.sidebar_state.selected().unwrap_or(0);
+                    self.sidebar_state.select(Some((i + 1).min(max)));
+                } else {
+                    self.scroll_down();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn rect_contains(area: Rect, x: u16, y: u16) -> bool {
+        x >= area.x && x < area.x + area.width && y >= area.y && y < area.y + area.height
+    }
+
+    fn sidebar_row_at(&self, x: u16, y: u16) -> Option<usize> {
+        let area = self.sidebar_area;
+        if
+            x < area.x + 1 ||
+            x >= area.x + area.width.saturating_sub(1) ||
+            y < area.y + 1 ||
+            y >= area.y + area.height.saturating_sub(1)
+        {
+            return None;
+        }
+        let row = (y - (area.y + 1)) as usize + self.sidebar_state.offset();
+        (row < self.rooms.len()).then_some(row)
+    }
+
+    fn help_row_at(&self, x: u16, y: u16) -> Option<usize> {
+        let area = self.help_area;
+        if
+            x < area.x + 1 ||
+            x >= area.x + area.width.saturating_sub(1) ||
+            y < area.y + 1 ||
+            y >= area.y + area.height.saturating_sub(1)
+        {
+            return None;
+        }
+        let row = (y - (area.y + 1)) as usize + self.help_state.offset();
+        (row < Self::HELP_COMMANDS.len()).then_some(row)
+    }
+
+    async fn select_room(&mut self, i: usize) {
+        if let Some(room) = self.rooms.get(i).cloned() {
+            self.sidebar_state.select(Some(i));
+            if room != self.current_room {
+                self.current_room = room.clone();
+                self.scroll_offset = 0;
+                self.mark_all_read(&room).await;
+            }
+        }
+    }
+
+    fn apply_help_selection(&mut self, i: usize) {
+        if let Some((_, _, insert)) = Self::HELP_COMMANDS.get(i) {
+            self.textarea.select_all();
+            self.textarea.cut();
+            self.textarea.insert_str(*insert);
+        }
+        self.show_help = false;
+        self.focus = FocusPane::Input;
     }
 
     async fn send_or_command(&mut self, text: String) {
@@ -438,19 +622,8 @@ impl App {
 
             match cmd {
                 "/help" => {
-                    self.ingest_msg(
-                        make_system_msg(
-                            "Commands:\n\
-                             /join <room>    \u{2014} join a room\n\
-                             /leave          \u{2014} leave current room\n\
-                             /rooms          \u{2014} list server rooms\n\
-                             /dm <user> <msg> \u{2014} direct message\n\
-                             /clear          \u{2014} clear messages\n\
-                             /help           \u{2014} show this help\n\
-                             /quit           \u{2014} quit"
-                        ),
-                        true
-                    );
+                    self.show_help = true;
+                    self.help_state.select(Some(0));
                 }
                 "/clear" => {
                     self.messages.retain(
@@ -673,7 +846,18 @@ impl App {
     }
 
     fn render_sidebar(&mut self, f: &mut Frame, area: Rect) {
-        let lines: Vec<ratatui::text::Line> = self.rooms
+        self.sidebar_area = area;
+
+        // Keep the selection in range if rooms were added/removed since the
+        // last frame (e.g. a fresh RoomList from the server).
+        let max_select = self.rooms.len().saturating_sub(1);
+        match self.sidebar_state.selected() {
+            Some(i) if i > max_select => self.sidebar_state.select(Some(max_select)),
+            None if !self.rooms.is_empty() => self.sidebar_state.select(Some(0)),
+            _ => {}
+        }
+
+        let items: Vec<ListItem> = self.rooms
             .iter()
             .map(|room| {
                 let has_unread = self.unread_rooms.contains(room);
@@ -683,19 +867,13 @@ impl App {
                 let style = if active {
                     Style::default().fg(self.theme.accent)
                 } else if has_unread {
-                    Style::default()
-                        .fg(self.theme.accent)
-                        .add_modifier(ratatui::style::Modifier::BOLD)
+                    Style::default().fg(self.theme.accent).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(self.theme.primary)
                 };
-                ratatui::text::Line::from(ratatui::text::Span::styled(display, style))
+                ListItem::new(ratatui::text::Line::from(ratatui::text::Span::styled(display, style)))
             })
             .collect();
-
-        let inner_h = area.height.saturating_sub(2) as usize;
-        let max_scroll = self.rooms.len().saturating_sub(inner_h);
-        self.sidebar_scroll = self.sidebar_scroll.min(max_scroll);
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -703,15 +881,20 @@ impl App {
             .border_style(
                 border_style(FocusPane::Sidebar, self.focus, self.pulse_tick, &self.theme)
             )
-            .title(" Messages ");
+            .title(" Rooms ");
 
-        let paragraph = Paragraph::new(lines)
+        let list = List::new(items)
             .block(block)
-            .scroll((self.sidebar_scroll as u16, 0));
-        f.render_widget(paragraph, area);
+            .highlight_style(
+                Style::default().bg(self.theme.primary).fg(self.theme.bg).add_modifier(Modifier::BOLD)
+            )
+            .highlight_symbol("\u{25B6} ");
+
+        f.render_stateful_widget(list, area, &mut self.sidebar_state);
     }
 
-    fn render_messages(&self, f: &mut Frame, area: Rect) {
+    fn render_messages(&mut self, f: &mut Frame, area: Rect) {
+        self.messages_area = area;
         let lines: Vec<ratatui::text::Line> = self
             .messages_for_room(&self.current_room)
             .flat_map(|(msg, _)| {
@@ -866,16 +1049,61 @@ impl App {
                 format!(" Several people are typing... ")
             }
         };
-        let label = if typing_text.is_empty() {
-            format!("F1:rooms  \u{2191}\u{2193}:scroll  Tab:focus", unread_str)
-        } else {
+        let label = if !typing_text.is_empty() {
             typing_text
+        } else if !unread_str.is_empty() {
+            format!(" \u{2191}\u{2193}\u{21b5}:switch  Tab:focus {}", unread_str)
+        } else {
+            " \u{2191}\u{2193}\u{21b5}:switch  Tab:focus  /help:commands".to_string()
         };
         let status = Paragraph::new(label).style(Style::default().fg(Color::DarkGray));
         f.render_widget(status, area);
         if area.width >= 42 {
             f.render_widget(spark, spark_area);
         }
+    }
+
+    fn render_help_popup(&mut self, f: &mut Frame, area: Rect) {
+        let items: Vec<ListItem> = Self::HELP_COMMANDS
+            .iter()
+            .map(|(cmd, desc, _)| {
+                let line = format!("{:<18}{}", cmd, desc);
+                ListItem::new(
+                    ratatui::text::Line::from(
+                        ratatui::text::Span::styled(line, Style::default().fg(self.theme.primary))
+                    )
+                )
+            })
+            .collect();
+
+        let popup_w = 44u16.min(area.width.saturating_sub(2));
+        let popup_h = ((Self::HELP_COMMANDS.len() as u16) + 2).min(area.height.saturating_sub(2));
+        let popup_area = Rect {
+            x: area.x + (area.width.saturating_sub(popup_w)) / 2,
+            y: area.y + (area.height.saturating_sub(popup_h)) / 2,
+            width: popup_w,
+            height: popup_h,
+        };
+        self.help_area = popup_area;
+
+        f.render_widget(Clear, popup_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .border_style(Style::default().fg(self.theme.accent))
+            .style(Style::default().bg(self.theme.bg))
+            .title(" Commands ")
+            .title_bottom(" \u{2191}\u{2193}\u{21b5} or click \u{2022} Esc to close ");
+
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(
+                Style::default().bg(self.theme.primary).fg(self.theme.bg).add_modifier(Modifier::BOLD)
+            )
+            .highlight_symbol("\u{25B6} ");
+
+        f.render_stateful_widget(list, popup_area, &mut self.help_state);
     }
 
     fn render(&mut self, f: &mut Frame) {
@@ -910,5 +1138,9 @@ impl App {
         self.render_animations(f, anim_area);
         self.render_input(f, input_area);
         self.render_status_bar(f, status_area);
+
+        if self.show_help {
+            self.render_help_popup(f, area);
+        }
     }
 }
