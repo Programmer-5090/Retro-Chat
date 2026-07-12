@@ -691,6 +691,18 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
     replay_history(&state, &current_room, &out_tx).await;
     send_room_list(&state, &username, &out_tx).await;
 
+    let active_msg = ChatMessage {
+        id: String::new(),
+        username: String::new(),
+        content: current_room.clone(),
+        timestamp: Local::now().format("%H:%M:%S").to_string(),
+        message_type: MessageType::SetActiveRoom,
+        room: String::new(),
+        is_history: false,
+    };
+    let active_json = serde_json::to_string(&active_msg).unwrap();
+    let _ = out_tx.send(active_json);
+
     let join_msg = ChatMessage {
         id: String::new(),
         username: username.clone(),

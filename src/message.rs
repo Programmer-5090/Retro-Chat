@@ -38,6 +38,9 @@ pub enum MessageType {
     /// Broadcast by the server while a user is typing in a room. Receiving
     /// clients show an animated indicator. The sender skips it.
     TypingNotification,
+    /// Sent by the server during login to tell the client which room it
+    /// should consider active. `content` is the room name.
+    SetActiveRoom,
 }
 
 /// Generates a short random id to tag a chat message with, so read

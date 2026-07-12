@@ -74,6 +74,7 @@ pub struct App {
     sidebar_state: ListState,
     sidebar_area: Rect,
     messages_area: Rect,
+    input_area: Rect,
     show_help: bool,
     help_state: ListState,
     help_area: Rect,
@@ -124,7 +125,7 @@ impl App {
         ta.set_style(Style::default().fg(default_theme.primary).bg(default_theme.bg));
         ta.set_cursor_style(Style::default().bg(default_theme.primary));
 
-        Self {
+        let mut app = Self {
             username,
             rooms: vec!["general".to_string()],
             current_room: "general".to_string(),
@@ -138,6 +139,7 @@ impl App {
             sidebar_state: ListState::default().with_selected(Some(0)),
             sidebar_area: Rect::default(),
             messages_area: Rect::default(),
+            input_area: Rect::default(),
             show_help: false,
             help_state: ListState::default().with_selected(Some(0)),
             help_area: Rect::default(),
@@ -159,7 +161,13 @@ impl App {
             sand: SandSim::new(),
             anim_kind: AnimationKind::Cube,
             start_time: Instant::now(),
-        }
+        };
+        app.cube.color = default_theme.primary;
+        app.matrix_rain.color = default_theme.primary;
+        app.starfield.color = default_theme.primary;
+        app.torus.color = default_theme.primary;
+        app.sand.color = default_theme.primary;
+        app
     }
 
     async fn run(
@@ -399,8 +407,11 @@ impl App {
             KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.theme_idx = (self.theme_idx + 1) % THEMES.len();
                 self.theme = THEMES[self.theme_idx];
-                self.cube.color = self.theme.primary;
-                self.torus.color = self.theme.accent;
+                self.cube.color = self.theme.secondary;
+                self.matrix_rain.color = self.theme.secondary;
+                self.starfield.color = self.theme.secondary;
+                self.torus.color = self.theme.secondary;
+                self.sand.color = self.theme.secondary;
                 self.textarea.set_style(Style::default().fg(self.theme.primary).bg(self.theme.bg));
                 self.textarea.set_cursor_style(Style::default().bg(self.theme.primary));
                 return;
@@ -534,6 +545,8 @@ impl App {
                     }
                 } else if Self::rect_contains(self.messages_area, mouse.column, mouse.row) {
                     self.focus = FocusPane::Messages;
+                } else if Self::rect_contains(self.input_area, mouse.column, mouse.row) {
+                    self.focus = FocusPane::Input;
                 }
             }
             MouseEventKind::ScrollUp => {
@@ -725,6 +738,12 @@ impl App {
                         self.current_room = self.rooms[0].clone();
                     }
                 }
+                MessageType::SetActiveRoom => {
+                    let room = msg.content.trim().to_string();
+                    if !room.is_empty() {
+                        self.current_room = room;
+                    }
+                }
                 MessageType::ReadReceipt => {
                     for id in msg.content
                         .split(',')
@@ -745,7 +764,7 @@ impl App {
                     if is_history && msg.username == self.username && !msg.id.is_empty() {
                         self.read_message_ids.insert(msg.id.clone());
                     }
-                    self.ingest_msg(msg, is_current_room);
+                    self.ingest_msg(msg, is_current_room || is_history);
                     if is_current_room && !is_history {
                         self.clear_room_read_state(&room);
                         if !ack_id.is_empty() {
@@ -773,7 +792,7 @@ impl App {
                     }
                 }
                 MessageType::SystemNotification => {
-                    let read = msg.room.is_empty() || msg.room == self.current_room;
+                    let read = msg.is_history || msg.room.is_empty() || msg.room == self.current_room;
                     if !msg.is_history {
                         match msg.content.as_str() {
                             "Joined the chat" | "Joined the room" => {
@@ -921,6 +940,7 @@ impl App {
                     MessageType::ReadReceipt => unreachable!(),
                     MessageType::PresenceSync => unreachable!(),
                     MessageType::TypingNotification => unreachable!(),
+                    MessageType::SetActiveRoom => unreachable!(),
                 }
             })
             .collect();
@@ -1064,7 +1084,7 @@ impl App {
     }
 
     fn render_help_popup(&mut self, f: &mut Frame, area: Rect) {
-        let items: Vec<ListItem> = Self::HELP_COMMANDS
+        let mut items: Vec<ListItem> = Self::HELP_COMMANDS
             .iter()
             .map(|(cmd, desc, _)| {
                 let line = format!("{:<18}{}", cmd, desc);
@@ -1076,8 +1096,23 @@ impl App {
             })
             .collect();
 
+        let keybind_lines = [
+            ratatui::text::Line::from(""),
+            ratatui::text::Line::from(vec![
+                ratatui::text::Span::styled("Ctrl+A", Style::default().fg(self.theme.accent).add_modifier(Modifier::BOLD)),
+                ratatui::text::Span::styled(" switch animation", Style::default().fg(self.theme.primary)),
+            ]),
+            ratatui::text::Line::from(vec![
+                ratatui::text::Span::styled("Ctrl+T", Style::default().fg(self.theme.accent).add_modifier(Modifier::BOLD)),
+                ratatui::text::Span::styled(" switch theme", Style::default().fg(self.theme.primary)),
+            ]),
+        ];
+        for line in &keybind_lines {
+            items.push(ListItem::new(line.clone()));
+        }
+
         let popup_w = 44u16.min(area.width.saturating_sub(2));
-        let popup_h = ((Self::HELP_COMMANDS.len() as u16) + 2).min(area.height.saturating_sub(2));
+        let popup_h = ((Self::HELP_COMMANDS.len() as u16) + keybind_lines.len() as u16 + 2).min(area.height.saturating_sub(2));
         let popup_area = Rect {
             x: area.x + (area.width.saturating_sub(popup_w)) / 2,
             y: area.y + (area.height.saturating_sub(popup_h)) / 2,
@@ -1136,6 +1171,7 @@ impl App {
         self.render_sidebar(f, sidebar_area);
         self.render_messages(f, messages_area);
         self.render_animations(f, anim_area);
+        self.input_area = input_area;
         self.render_input(f, input_area);
         self.render_status_bar(f, status_area);
 
