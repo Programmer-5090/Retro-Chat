@@ -28,8 +28,8 @@ use super::render::{
     make_system_msg,
     username_color,
 };
-use super::cube_anim::SpinningCube;
-use super::types::{ FocusPane, Theme, THEMES };
+use super::anims::{SpinningCube, MatrixRain, Starfield, SpinningTorus, SandSim};
+use super::types::{ AnimationKind, FocusPane, Theme, THEMES };
 
 pub async fn run_chat_ui(
     username: String,
@@ -77,6 +77,11 @@ pub struct App {
     last_keypress: Instant,
     last_typing_sent: Instant,
     cube: SpinningCube,
+    matrix_rain: MatrixRain,
+    starfield: Starfield,
+    torus: SpinningTorus,
+    sand: SandSim,
+    anim_kind: AnimationKind,
     start_time: Instant,
 }
 
@@ -116,6 +121,11 @@ impl App {
             last_keypress: Instant::now(),
             last_typing_sent: Instant::now(),
             cube: SpinningCube::new(),
+            matrix_rain: MatrixRain::new(),
+            starfield: Starfield::new(),
+            torus: SpinningTorus::new(),
+            sand: SandSim::new(),
+            anim_kind: AnimationKind::Cube,
             start_time: Instant::now(),
         }
     }
@@ -347,8 +357,13 @@ impl App {
                 self.theme_idx = (self.theme_idx + 1) % THEMES.len();
                 self.theme = THEMES[self.theme_idx];
                 self.cube.color = self.theme.primary;
+                self.torus.color = self.theme.accent;
                 self.textarea.set_style(Style::default().fg(self.theme.primary).bg(self.theme.bg));
                 self.textarea.set_cursor_style(Style::default().bg(self.theme.primary));
+                return;
+            }
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.anim_kind = self.anim_kind.next();
                 return;
             }
             _ => {}
@@ -755,23 +770,32 @@ impl App {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(border::ROUNDED)
-            .border_style(Style::default().fg(self.theme.primary))
-            .title(" Animation ");
+            .border_style(Style::default().fg(self.theme.primary));
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        // Square portion for the cube (cell aspect ~1:2 w:h)
-        let cube_w = (inner.height * 2).min(inner.width);
-        let x_off = (inner.width.saturating_sub(cube_w)) / 2;
-        let cube_area = Rect {
-            x: inner.x + x_off,
-            y: inner.y,
-            width: cube_w,
-            height: inner.height,
+        let t = self.start_time.elapsed().as_secs_f64();
+
+        // Cube/torus look best confined to a square-ish region (cell aspect
+        // is ~1:2 w:h); the others use the full box.
+        let square_area = {
+            let box_w = (inner.height * 2).min(inner.width);
+            let x_off = (inner.width.saturating_sub(box_w)) / 2;
+            Rect {
+                x: inner.x + x_off,
+                y: inner.y,
+                width: box_w,
+                height: inner.height,
+            }
         };
 
-        let t = self.start_time.elapsed().as_secs_f64();
-        self.cube.render(f, cube_area, t);
+        match self.anim_kind {
+            AnimationKind::Cube => self.cube.render(f, square_area, t),
+            AnimationKind::Torus => self.torus.render(f, square_area, t),
+            AnimationKind::MatrixRain => self.matrix_rain.render(f, inner, t),
+            AnimationKind::Starfield => self.starfield.render(f, inner, t),
+            AnimationKind::Sand => self.sand.render(f, inner, t),
+        }
     }
 
     fn render_input(&mut self, f: &mut Frame, area: Rect) {
@@ -843,7 +867,7 @@ impl App {
             }
         };
         let label = if typing_text.is_empty() {
-            format!("F1:rooms  \u{2191}\u{2193}:scroll  Tab:focus{}", unread_str)
+            format!("F1:rooms  \u{2191}\u{2193}:scroll  Tab:focus  Ctrl+A:anim{}", unread_str)
         } else {
             typing_text
         };

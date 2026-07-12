@@ -57,6 +57,37 @@ pub enum FocusPane {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimationKind {
+    Cube,
+    MatrixRain,
+    Starfield,
+    Torus,
+    Sand,
+}
+
+impl AnimationKind {
+    pub fn next(self) -> Self {
+        match self {
+            AnimationKind::Cube => AnimationKind::MatrixRain,
+            AnimationKind::MatrixRain => AnimationKind::Starfield,
+            AnimationKind::Starfield => AnimationKind::Torus,
+            AnimationKind::Torus => AnimationKind::Sand,
+            AnimationKind::Sand => AnimationKind::Cube,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            AnimationKind::Cube => "Cube",
+            AnimationKind::MatrixRain => "Matrix",
+            AnimationKind::Starfield => "Warp",
+            AnimationKind::Torus => "Torus",
+            AnimationKind::Sand => "Sand",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum LeaveResult {
     Left,
