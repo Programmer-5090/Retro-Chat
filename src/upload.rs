@@ -14,6 +14,8 @@ use tokio::fs;
 
 use sqlx::Row;
 
+use image::{ImageFormat, imageops::FilterType};
+
 #[derive(Clone)]
 pub struct UploadState {
     pub pool: sqlx::Pool<sqlx::Postgres>,
@@ -83,7 +85,7 @@ async fn handle_upload(
             if data.len() > 32 * 1024 * 1024 {
                 return Err((
                     StatusCode::PAYLOAD_TOO_LARGE,
-                    "file exceeds 10 MB limit".to_string(),
+                    "file exceeds 32 MB limit".to_string(),
                 ));
             }
             file_bytes = Some(data.to_vec());
@@ -92,7 +94,12 @@ async fn handle_upload(
 
     let bytes = file_bytes
         .ok_or((StatusCode::BAD_REQUEST, "no file field in multipart".to_string()))?;
+    let img = image::load_from_memory(&bytes)
+        .map_err(| e | (StatusCode::BAD_REQUEST, format!("Invalid image: {}", e)))?;
+    let dims = (img.width(), img.height());
+
     let orig = original_name.unwrap_or_else(|| "upload".to_string());
+    let thumb = img.resize(128, 128, FilterType::Lanczos3);
 
     let kind = infer::get(&bytes)
         .ok_or((StatusCode::BAD_REQUEST, "could not determine file type".to_string()))?;
@@ -119,12 +126,21 @@ async fn handle_upload(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let thumb_path = dir.join(format!("thumb_{}", &filename));
-    fs::copy(&file_path, &thumb_path)
+    let thumb_format = match mime {
+        "image/jpeg" => ImageFormat::Jpeg,
+        "image/gif" => ImageFormat::Gif,
+        "image/webp" => ImageFormat::WebP,
+        _ => ImageFormat::Png,
+    };
+    let mut thumb_buf = std::io::Cursor::new(Vec::new());
+    thumb.write_to(&mut thumb_buf, thumb_format)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("thumb encode: {}", e)))?;
+    fs::write(&thumb_path, thumb_buf.into_inner())
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let row = sqlx::query(
-        "INSERT INTO attachments (filename, original_name, mime_type, file_path, thumb_path, uploader, width, height) VALUES ($1, $2, $3, $4, $5, $6, 0, 0) RETURNING id",
+        "INSERT INTO attachments (filename, original_name, mime_type, file_path, thumb_path, uploader, width, height) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
     )
     .bind(&filename)
     .bind(&orig)
@@ -132,6 +148,8 @@ async fn handle_upload(
     .bind(file_path.to_string_lossy().to_string())
     .bind(thumb_path.to_string_lossy().to_string())
     .bind(&_username)
+    .bind(dims.0 as i32)
+    .bind(dims.1 as i32)
     .fetch_one(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -141,8 +159,8 @@ async fn handle_upload(
     Ok(Json(UploadResponse {
         url: format!("/attachments/{}", attachment_id),
         thumb_url: format!("/attachments/{}/thumb", attachment_id),
-        width: 0,
-        height: 0,
+        width: dims.0,
+        height: dims.1,
     }))
 }
 
