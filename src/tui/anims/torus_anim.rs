@@ -1,4 +1,3 @@
-
 use ratatui::{
     layout::Rect,
     style::Color,
@@ -56,7 +55,6 @@ impl SpinningTorus {
         }
 
         // Auto-fit the camera bounds to the torus's current projected extent
-        // (see cube_anim.rs for why this can't just be a fixed constant).
         let max_extent = projected
             .iter()
             .fold(0.0_f64, |m, (x, y, _)| m.max(x.abs()).max(y.abs()))

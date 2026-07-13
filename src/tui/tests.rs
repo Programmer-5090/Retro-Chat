@@ -7,13 +7,18 @@ use super::render::{
     format_title,
     format_user_message,
     format_system_message,
+    format_image_message,
 };
 
 use crate::ChatMessage;
 use crate::message::MessageType;
 
 fn arb_message_type() -> impl Strategy<Value = MessageType> {
-    prop_oneof![Just(MessageType::UserMessage), Just(MessageType::SystemNotification)]
+    prop_oneof![
+        Just(MessageType::UserMessage),
+        Just(MessageType::SystemNotification),
+        Just(MessageType::ImageMessage),
+    ]
 }
 
 prop_compose! {
@@ -242,4 +247,76 @@ proptest! {
         assert!(rendered.ends_with(" ***"), "should end with ***");
         assert!(rendered.contains(&msg.content), "missing content");
     }
+}
+
+// ImageMessage format: two lines — timestamp+username on line 1, "** image **" on line 2
+proptest! {
+    #[test]
+    fn prop_image_message_format(
+        msg in arb_chat_message()
+            .prop_filter("must be ImageMessage", |m| matches!(m.message_type, MessageType::ImageMessage))
+    ) {
+        let lines = format_image_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan);
+        assert_eq!(lines.len(), 2, "image message should produce exactly 2 lines, got {}", lines.len());
+
+        let line1: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(line1.contains(&format!("[{}", &msg.timestamp[..5])), "line1 missing timestamp: {line1}");
+        assert!(line1.contains(&msg.username), "line1 missing username: {line1}");
+        assert!(line1.contains("\u{25B6}"), "line1 missing ▶ separator: {line1}");
+
+        let line2: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(line2.contains("** image **"), "line2 missing ** image **: {line2}");
+    }
+}
+
+#[test]
+fn test_image_message_with_dimensions() {
+    let msg = ChatMessage {
+        id: String::new(),
+        username: "jet".into(),
+        content: String::new(),
+        timestamp: "15:51:30".into(),
+        message_type: MessageType::ImageMessage,
+        room: "general".into(),
+        is_history: false,
+        image_url: "/attachments/1".into(),
+        thumb_url: "/attachments/1/thumb".into(),
+        width: 800,
+        height: 600,
+    };
+    let lines = format_image_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan);
+    assert_eq!(lines.len(), 2);
+
+    let line1: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert_eq!(line1, "[15:51] jet \u{25B6}");
+
+    let line2: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(line2.contains("** image **"), "should show ** image **, got: {line2}");
+    assert!(!line2.contains("800x600"), "dimensions should not appear in rendered text");
+}
+
+#[test]
+fn test_image_message_no_dimensions() {
+    let msg = ChatMessage {
+        id: String::new(),
+        username: "alice".into(),
+        content: String::new(),
+        timestamp: "09:15:00".into(),
+        message_type: MessageType::ImageMessage,
+        room: "general".into(),
+        is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
+    };
+    let lines = format_image_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan);
+    assert_eq!(lines.len(), 2);
+
+    let line1: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(line1.contains("[09:15]"), "line1 missing timestamp");
+    assert!(line1.contains("alice"), "line1 missing username");
+
+    let line2: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(line2.contains("** image **"), "line2 missing ** image **");
 }

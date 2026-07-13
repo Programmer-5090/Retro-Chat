@@ -1,5 +1,3 @@
-// login.rs — ByteChat startup splash (typewriter reveal) and in-TUI password login.
-
 use std::time::{ Duration, Instant };
 
 use crossterm::{

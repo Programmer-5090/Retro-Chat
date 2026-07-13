@@ -392,10 +392,7 @@ impl App {
     /// back to normal, without notifying anyone. Used when a live message
     /// arrives in the room you're currently viewing — per spec, the room
     /// being actively watched means older unread messages should no longer
-    /// look unread. This is intentionally NOT called just from switching
-    /// rooms (see `handle_server_message`'s `is_history` check), so that
-    /// leaving and re-entering a room without any new activity still shows
-    /// the same unread coloring you left behind.
+    /// look unread.
     fn clear_room_read_state(&mut self, room: &str) {
         for pair in &mut self.messages {
             let same_room =
@@ -424,9 +421,7 @@ impl App {
 
     /// Marks everything in `room` as read locally AND tells the server, so
     /// the original senders can see their messages flip to the "read"
-    /// color. Only call this for a deliberate read action (you replying in
-    /// the room) — calling it on every incoming message would flood the
-    /// server with acks during history replay.
+    /// color.
     async fn mark_all_read(&mut self, room: &str) {
         let ids = self.collect_unread_ids(room);
         self.clear_room_read_state(room);
@@ -1339,7 +1334,6 @@ impl App {
         let horizontal = Layout::horizontal([Constraint::Length(16), Constraint::Min(0)]);
         let [sidebar_col, messages_area] = horizontal.areas(body_area);
 
-        // Sidebar column: Rooms on top, small Animation box underneath.
         let sidebar_vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(6)]);
         let [sidebar_area, anim_area] = sidebar_vertical.areas(sidebar_col);
 

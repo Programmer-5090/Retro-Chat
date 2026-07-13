@@ -289,7 +289,7 @@ async fn handle_join_command(
     replay_history(state, room_name, out_tx).await;
     send_room_list(state, username, out_tx).await;
 
-    // Note: the user stays live-subscribed to `old_room` (they can still
+    // The user stays live-subscribed to `old_room` (they can still
     // get messages/unread badges there) — they've only changed which room
     // is active, so there's no "left the room" notice to send anymore.
     let dm_move = old_room.starts_with("__dm__") || room_name.starts_with("__dm__");

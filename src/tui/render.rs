@@ -178,23 +178,17 @@ pub fn format_image_message(
     let timestamp = msg.timestamp.chars().take(5).collect::<String>();
     let ts_span = Span::styled(format!("[{}] ", timestamp), Style::default().fg(color));
     let user_span = Span::styled(
-        format!("{} \u{25B6} ", msg.username.clone()),
+        format!("{} \u{25B6}", msg.username.clone()),
         Style::default().fg(color).add_modifier(Modifier::BOLD)
     );
-    let label = if msg.content.is_empty() {
-        "[image]".to_string()
-    } else {
-        format!("[image: {}]", msg.content)
-    };
+    let line1 = Line::from(vec![ts_span, user_span]);
+
+    let indent = " ".repeat(timestamp.len() + msg.username.len() + 4);
     let img_span = Span::styled(
-        label,
+        format!("{}** image **", indent),
         Style::default().fg(mention_color).add_modifier(Modifier::BOLD)
     );
-    let dim = if msg.width > 0 && msg.height > 0 {
-        format!(" ({}x{})", msg.width, msg.height)
-    } else {
-        String::new()
-    };
-    let dim_span = Span::styled(dim, Style::default().fg(color));
-    vec![Line::from(vec![ts_span, user_span, img_span, dim_span])]
+    let line2 = Line::from(vec![img_span]);
+
+    vec![line1, line2]
 }
