@@ -163,5 +163,9 @@ pub fn make_system_msg(text: &str) -> ChatMessage {
         message_type: MessageType::SystemNotification,
         room: String::new(),
         is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
     }
 }

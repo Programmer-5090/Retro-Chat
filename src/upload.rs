@@ -1,0 +1,208 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use axum::{
+    Router,
+    extract::{Multipart, Path, Query, State},
+    http::{HeaderMap, StatusCode, header},
+    response::IntoResponse,
+    routing::{get, post},
+    Json,
+};
+use serde::Serialize;
+use tokio::fs;
+
+use sqlx::Row;
+
+#[derive(Clone)]
+pub struct UploadState {
+    pub pool: sqlx::Pool<sqlx::Postgres>,
+    pub redis_client: redis::Client,
+}
+
+#[derive(Serialize)]
+pub struct UploadResponse {
+    pub url: String,
+    pub thumb_url: String,
+    pub width: i32,
+    pub height: i32,
+}
+
+fn uploads_dir() -> PathBuf {
+    PathBuf::from("uploads")
+}
+
+async fn verify_token(redis_client: &redis::Client, token: &str) -> Option<String> {
+    let mut conn = redis_client.get_connection().ok()?;
+    let username: String = redis::cmd("GET")
+        .arg(format!("session:{}", token))
+        .query(&mut conn)
+        .ok()?;
+    if username.is_empty() { None } else { Some(username) }
+}
+
+fn mime_to_ext(mime: &str) -> &'static str {
+    match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "bin",
+    }
+}
+
+async fn handle_upload(
+    State(state): State<UploadState>,
+    Query(params): Query<HashMap<String, String>>,
+    mut multipart: Multipart,
+) -> Result<Json<UploadResponse>, (StatusCode, String)> {
+    let token = params
+        .get("token")
+        .ok_or((StatusCode::UNAUTHORIZED, "missing token".to_string()))?;
+    let _username = verify_token(&state.redis_client, token)
+        .await
+        .ok_or((StatusCode::UNAUTHORIZED, "invalid token".to_string()))?;
+
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut original_name: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
+        let name = field.name().unwrap_or_default().to_string();
+        if name == "file" {
+            original_name = field
+                .file_name()
+                .map(|s| s.to_string());
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+            if data.len() > 32 * 1024 * 1024 {
+                return Err((
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "file exceeds 10 MB limit".to_string(),
+                ));
+            }
+            file_bytes = Some(data.to_vec());
+        }
+    }
+
+    let bytes = file_bytes
+        .ok_or((StatusCode::BAD_REQUEST, "no file field in multipart".to_string()))?;
+    let orig = original_name.unwrap_or_else(|| "upload".to_string());
+
+    let kind = infer::get(&bytes)
+        .ok_or((StatusCode::BAD_REQUEST, "could not determine file type".to_string()))?;
+    if !kind.mime_type().starts_with("image/") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "only image files are accepted".to_string(),
+        ));
+    }
+
+    let mime = kind.mime_type();
+    let ext = mime_to_ext(mime);
+    let id = uuid::Uuid::new_v4().to_string();
+    let filename = format!("{}.{}", id, ext);
+
+    let dir = uploads_dir();
+    fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let file_path = dir.join(&filename);
+    fs::write(&file_path, &bytes)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let thumb_path = dir.join(format!("thumb_{}", &filename));
+    fs::copy(&file_path, &thumb_path)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let row = sqlx::query(
+        "INSERT INTO attachments (filename, original_name, mime_type, file_path, thumb_path, uploader, width, height) VALUES ($1, $2, $3, $4, $5, $6, 0, 0) RETURNING id",
+    )
+    .bind(&filename)
+    .bind(&orig)
+    .bind(mime)
+    .bind(file_path.to_string_lossy().to_string())
+    .bind(thumb_path.to_string_lossy().to_string())
+    .bind(&_username)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let attachment_id: i32 = row.get("id");
+
+    Ok(Json(UploadResponse {
+        url: format!("/attachments/{}", attachment_id),
+        thumb_url: format!("/attachments/{}/thumb", attachment_id),
+        width: 0,
+        height: 0,
+    }))
+}
+
+async fn get_attachment(
+    State(state): State<UploadState>,
+    Path(id): Path<i32>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let row = sqlx::query("SELECT file_path, mime_type FROM attachments WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "attachment not found".to_string()))?;
+
+    let file_path: String = row.get("file_path");
+    let mime_type: String = row.get("mime_type");
+
+    let data = fs::read(&file_path)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, mime_type.parse().unwrap());
+    Ok((headers, data))
+}
+
+async fn get_attachment_thumb(
+    State(state): State<UploadState>,
+    Path(id): Path<i32>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let row = sqlx::query("SELECT thumb_path, file_path, mime_type FROM attachments WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or((StatusCode::NOT_FOUND, "attachment not found".to_string()))?;
+
+    let thumb_path: String = row.get("thumb_path");
+    let file_path: String = row.get("file_path");
+    let mime_type: String = row.get("mime_type");
+
+    let path = if PathBuf::from(&thumb_path).exists() {
+        thumb_path
+    } else {
+        file_path
+    };
+
+    let data = fs::read(&path)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, mime_type.parse().unwrap());
+    Ok((headers, data))
+}
+
+pub fn router(state: UploadState) -> Router {
+    Router::new()
+        .route("/upload", post(handle_upload))
+        .route("/attachments/{id}", get(get_attachment))
+        .route("/attachments/{id}/thumb", get(get_attachment_thumb))
+        .with_state(state)
+}

@@ -392,7 +392,7 @@ impl App {
         self.messages
             .iter()
             .filter(
-                |(msg, _)| (msg.room == room || (msg.room.is_empty() && room == self.current_room))
+                |(msg, _)| msg.room == room || (msg.room.is_empty() && room == self.current_room)
             )
             .count()
     }
@@ -818,6 +818,7 @@ impl App {
                         }
                     }
                 }
+                MessageType::ImageMessage => {}
                 MessageType::TypingNotification => {
                     if msg.username != self.username {
                         let room = if msg.room.is_empty() {
@@ -983,6 +984,7 @@ impl App {
                     }
                     MessageType::SystemNotification =>
                         format_system_message(msg, self.theme.accent),
+                    MessageType::ImageMessage => unreachable!(),
                     MessageType::RoomList => unreachable!(),
                     MessageType::ReadReceipt => unreachable!(),
                     MessageType::PresenceSync => unreachable!(),
@@ -1097,7 +1099,7 @@ impl App {
         let typing_text = {
             let names: Vec<&str> = self.typing_users
                 .iter()
-                .filter(|(_, (r, _))| (r == &self.current_room || r.starts_with("__dm__")))
+                .filter(|(_, (r, _))| r == &self.current_room || r.starts_with("__dm__"))
                 .map(|(u, _)| u.as_str())
                 .collect();
             if names.is_empty() {

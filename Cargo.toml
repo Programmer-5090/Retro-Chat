@@ -24,6 +24,9 @@ tokio-rustls = "0.26"
 rustls = "0.23"
 rustls-pemfile = "2"
 rcgen = "0.14"
+axum = { version = "0.8", features = ["multipart"] }
+infer = "0.19"
+uuid = {version = "1", features = ["v4"]}
 
 [dev-dependencies]
 proptest = "1"

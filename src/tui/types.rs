@@ -155,7 +155,7 @@ impl UiAppState {
     fn room_message_count(&self) -> usize {
         self.messages
             .iter()
-            .filter(|m| (m.room == self.current_room || m.room.is_empty()))
+            .filter(|m| m.room == self.current_room || m.room.is_empty())
             .count()
     }
 

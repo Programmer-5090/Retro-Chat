@@ -72,6 +72,10 @@ fn build_msg(text: &str, room: &str) -> String {
         message_type: MessageType::SystemNotification,
         room: room.to_string(),
         is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
     };
     let json = serde_json::to_string(&msg).unwrap();
     format!("{}\n", json)
@@ -115,6 +119,10 @@ pub fn build_read_receipt(reader: &str, room: &str, ids: &[String]) -> String {
         message_type: MessageType::ReadReceipt,
         room: room.to_string(),
         is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
     };
     serde_json::to_string(&msg).unwrap()
 }

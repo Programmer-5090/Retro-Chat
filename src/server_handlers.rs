@@ -31,7 +31,7 @@ async fn send_notice(writer: &mut (impl AsyncWrite + Unpin), text: &str) {
 
 fn validate_username(username: &str) -> bool {
     let len = username.len();
-    len >= 3 && len <= 32 && username.chars().all(|c| (c.is_alphanumeric() || c == '_'))
+    len >= 3 && len <= 32 && username.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 async fn check_banned(state: &AppState, username: &str) -> bool {
@@ -181,6 +181,10 @@ async fn send_room_list(state: &AppState, username: &str, out_tx: &mpsc::Unbound
         message_type: MessageType::RoomList,
         room: String::new(),
         is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
     };
     let json = serde_json::to_string(&msg).unwrap();
     let _ = out_tx.send(json);
@@ -209,6 +213,10 @@ async fn handle_leave_command(
         message_type: MessageType::SystemNotification,
         room: current_room.clone(),
         is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
     };
     let leave_json = serde_json::to_string(&leave_notice).unwrap();
     state.send_to_room(&current_room, &leave_json).await;
@@ -243,6 +251,10 @@ async fn replay_history(state: &AppState, room_name: &str, out_tx: &mpsc::Unboun
             },
             room: room_name.to_string(),
             is_history: true,
+            image_url: String::new(),
+            thumb_url: String::new(),
+            width: 0,
+            height: 0,
         };
         let msg_json = serde_json::to_string(&msg).unwrap();
         let _ = out_tx.send(msg_json);
@@ -260,7 +272,7 @@ async fn handle_join_command(
     if
         room_name.is_empty() ||
         room_name.len() > 32 ||
-        !room_name.chars().all(|c| (c.is_alphanumeric() || c == '_' || c == '-'))
+        !room_name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
     {
         send_notice(
             writer,
@@ -290,6 +302,10 @@ async fn handle_join_command(
             message_type: MessageType::SystemNotification,
             room: room_name.to_string(),
             is_history: false,
+            image_url: String::new(),
+            thumb_url: String::new(),
+            width: 0,
+            height: 0,
         };
         let join_json = serde_json::to_string(&join_notice).unwrap();
         state.send_to_room(room_name, &join_json).await;
@@ -352,6 +368,10 @@ async fn handle_msg_command(
         message_type: MessageType::UserMessage,
         room: dm_room.clone(),
         is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
     };
     let dm_json = serde_json::to_string(&dm_msg).unwrap();
 
@@ -526,6 +546,10 @@ async fn handle_regular_message(
         message_type: MessageType::UserMessage,
         room: user_room.clone(),
         is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
     };
     let json = serde_json::to_string(&msg).unwrap();
 
@@ -542,6 +566,10 @@ async fn handle_regular_message(
             message_type: MessageType::SystemNotification,
             room: String::new(),
             is_history: false,
+            image_url: String::new(),
+            thumb_url: String::new(),
+            width: 0,
+            height: 0,
         };
         let warn_json = serde_json::to_string(&warn).unwrap();
         let _ = writer.write_all(warn_json.as_bytes()).await;
@@ -607,6 +635,10 @@ async fn cleanup_disconnect(state: &AppState, redis_conn: &mut redis::Connection
             message_type: MessageType::SystemNotification,
             room: room.clone(),
             is_history: false,
+            image_url: String::new(),
+            thumb_url: String::new(),
+            width: 0,
+            height: 0,
         };
         let leave_json = serde_json::to_string(&leave_msg).unwrap();
         state.send_to_room(room, &leave_json).await;
@@ -700,6 +732,10 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
         message_type: MessageType::SetActiveRoom,
         room: String::new(),
         is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
     };
     let active_json = serde_json::to_string(&active_msg).unwrap();
     let _ = out_tx.send(active_json);
@@ -712,6 +748,10 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
         message_type: MessageType::SystemNotification,
         room: current_room.clone(),
         is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
     };
     let join_json = serde_json::to_string(&join_msg).unwrap();
     state.send_to_room(&current_room, &join_json).await;
@@ -730,6 +770,10 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
         message_type: MessageType::PresenceSync,
         room: current_room.clone(),
         is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
     };
     let sync_json = serde_json::to_string(&sync_msg).unwrap();
     let _ = out_tx.send(sync_json);
@@ -751,6 +795,10 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                     message_type: MessageType::TypingNotification,
                     room: current_room.clone(),
                     is_history: false,
+                    image_url: String::new(),
+                    thumb_url: String::new(),
+                    width: 0,
+                    height: 0,
                 };
                 let t_json = serde_json::to_string(&t_msg).unwrap();
                 let _ = out_tx.send(t_json);
@@ -825,6 +873,10 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                             message_type: MessageType::TypingNotification,
                             room: room.clone(),
                             is_history: false,
+                            image_url: String::new(),
+                            thumb_url: String::new(),
+                            width: 0,
+                            height: 0,
                         };
                         let typing_json = serde_json::to_string(&typing_msg).unwrap();
                         state.send_to_room(&room, &typing_json).await;

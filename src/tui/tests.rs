@@ -23,7 +23,7 @@ prop_compose! {
         timestamp in "[0-9]{2}:[0-9]{2}:[0-9]{2}",
         message_type in arb_message_type(),
     ) -> ChatMessage {
-        ChatMessage { id: String::new(), username, content, timestamp, message_type, room: String::new(), is_history: false }
+        ChatMessage { id: String::new(), username, content, timestamp, message_type, room: String::new(), is_history: false, image_url: String::new(), thumb_url: String::new(), width: 0, height: 0 }
     }
 }
 
@@ -54,6 +54,10 @@ proptest! {
                 message_type: MessageType::UserMessage,
                 room: "general".into(),
                 is_history: false,
+                image_url: String::new(),
+                thumb_url: String::new(),
+                width: 0,
+                height: 0,
             });
         }
         state.scroll_offset = initial_offset.min(state.messages.len().saturating_sub(visible_height) as u16);
@@ -185,6 +189,10 @@ fn test_mention_highlighting() {
         message_type: MessageType::UserMessage,
         room: String::new(),
         is_history: false,
+        image_url: String::new(),
+        thumb_url: String::new(),
+        width: 0,
+        height: 0,
     };
     let lines = format_user_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan, None);
     let rendered: String = lines

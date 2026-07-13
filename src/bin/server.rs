@@ -3,7 +3,7 @@ use tokio::net::TcpListener;
 use chrono::Local;
 use redis::Commands;
 
-use retro_chat::{ AppState, handle_connection, load_tls_config };
+use retro_chat::{ AppState, handle_connection, load_tls_config, UploadState, upload_router };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -29,7 +29,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .execute(&pool).await?;
 
-    let state = AppState::new(pool, redis_client);
+    let state = AppState::new(pool.clone(), redis_client.clone());
+
+    let upload_bind = std::env::var("UPLOAD_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8083".to_string());
+    let upload_state = UploadState {
+        pool,
+        redis_client: redis_client.clone(),
+    };
+    let upload_app = upload_router(upload_state);
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(&upload_bind).await.unwrap();
+        println!("  Upload HTTP listener on: {}", upload_bind);
+        axum::serve(listener, upload_app).await.unwrap();
+    });
 
     let tls_status = if tls_acceptor.is_some() { "TLS" } else { "TCP" };
     let line1 = "RETRO CHAT SERVER ACTIVE";
