@@ -27,6 +27,7 @@ rcgen = "0.14"
 axum = { version = "0.8", features = ["multipart"] }
 infer = "0.19"
 uuid = {version = "1", features = ["v4"]}
+reqwest = { version = "0.12", features = ["multipart"] }
 
 [dev-dependencies]
 proptest = "1"

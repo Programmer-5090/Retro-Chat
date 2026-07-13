@@ -880,8 +880,46 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                         };
                         let typing_json = serde_json::to_string(&typing_msg).unwrap();
                         state.send_to_room(&room, &typing_json).await;
+                    } else if let Some(args) = input.strip_prefix("/image ") {
+                        let parts: Vec<&str> = args.splitn(4, ' ').collect();
+                        if parts.len() >= 2 {
+                            let image_url = parts[0].to_string();
+                            let thumb_url = parts[1].to_string();
+                            let width: u32 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+                            let height: u32 = parts.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
+                            let image_msg = ChatMessage {
+                                id: generate_message_id(),
+                                username: username.clone(),
+                                content: String::new(),
+                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                message_type: MessageType::ImageMessage,
+                                room: current_room.clone(),
+                                is_history: false,
+                                image_url,
+                                thumb_url,
+                                width,
+                                height,
+                            };
+                            let image_json = serde_json::to_string(&image_msg).unwrap();
+                            let room_id = state.get_or_create_db_room(&current_room, &username).await;
+                            sqlx::query(
+                                "INSERT INTO messages (room_id, username, content, message_type, image_url, thumb_url, width, height) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+                            )
+                            .bind(room_id)
+                            .bind(&username)
+                            .bind(&image_msg.content)
+                            .bind("ImageMessage")
+                            .bind(&image_msg.image_url)
+                            .bind(&image_msg.thumb_url)
+                            .bind(image_msg.width as i32)
+                            .bind(image_msg.height as i32)
+                            .execute(&state.pool).await.ok();
+                            state.send_to_room(&current_room, &image_json).await;
+                        } else {
+                            send_notice(&mut writer, "Usage: /image <url> <thumb_url> [width] [height]").await;
+                        }
                     } else if input == "/help" {
-                        send_notice(&mut writer, "Commands: /join <room>, /rooms, /msg <user> <text>, /help | Admin: /mute, /unmute, /ban, /unban").await;
+                        send_notice(&mut writer, "Commands: /join <room>, /rooms, /msg <user> <text>, /image <url> <thumb_url>, /help | Admin: /mute, /unmute, /ban, /unban").await;
                     } else {
                         send_notice(&mut writer, "Unknown command. Try /help.").await;
                     }

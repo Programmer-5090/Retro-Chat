@@ -37,6 +37,7 @@ use super::render::{
     format_title,
     format_system_message,
     format_user_message,
+    format_image_message,
     make_system_msg,
     username_color,
 };
@@ -45,11 +46,12 @@ use super::types::{ AnimationKind, FocusPane, Theme, THEMES };
 
 pub async fn run_chat_ui(
     username: String,
+    token: String,
     reader: BufReader<tokio::io::ReadHalf<ClientStream>>,
     writer: tokio::io::WriteHalf<ClientStream>
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (server_tx, server_rx) = mpsc::unbounded_channel::<String>();
-    let mut app = App::new(username, writer, server_rx);
+    let mut app = App::new(username, token, writer, server_rx, server_tx.clone());
     app.run(reader, server_tx).await
 }
 
@@ -63,8 +65,61 @@ impl Drop for CleanGuard {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct UploadResponse {
+    url: String,
+    thumb_url: String,
+    width: u32,
+    height: u32,
+}
+
+async fn do_image_upload(path: &str, token: &str) -> Result<UploadResponse, String> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .map_err(|e| format!("cannot read file: {}", e))?;
+
+    let file_name = std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "upload.png".to_string());
+
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(file_name)
+        .mime_str("application/octet-stream")
+        .map_err(|e| e.to_string())?;
+
+    let form = reqwest::multipart::Form::new()
+        .text("token", token.to_string())
+        .part("file", part);
+
+    let upload_base = std::env::var("UPLOAD_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8083".to_string());
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/upload?token={}", upload_base, token))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("upload request failed: {}", e))?;
+
+    let status = resp.status();
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("failed to read response: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!("upload failed ({}): {}", status, body));
+    }
+
+    serde_json::from_str::<UploadResponse>(&body)
+        .map_err(|e| format!("invalid response: {}", e))
+}
+
 pub struct App {
     pub username: String,
+    pub token: String,
     pub rooms: Vec<String>,
     pub current_room: String,
     messages: Vec<(ChatMessage, bool)>,
@@ -74,6 +129,7 @@ pub struct App {
     pub writer: Arc<Mutex<tokio::io::WriteHalf<ClientStream>>>,
     pub should_quit: bool,
     pub server_rx: mpsc::UnboundedReceiver<String>,
+    server_tx: mpsc::UnboundedSender<String>,
     sidebar_state: ListState,
     sidebar_area: Rect,
     messages_area: Rect,
@@ -107,11 +163,12 @@ impl App {
     /// (display command, description, text inserted into the input box
     /// when picked from the `/help` popup). Argument-taking commands insert
     /// a trailing space so the cursor lands ready to type the argument.
-    const HELP_COMMANDS: [(&'static str, &'static str, &'static str); 7] = [
+    const HELP_COMMANDS: [(&'static str, &'static str, &'static str); 8] = [
         ("/join <room>", "join a room", "/join "),
         ("/leave", "leave current room", "/leave"),
         ("/rooms", "list server rooms", "/rooms"),
         ("/dm <user> <msg>", "send a direct message", "/dm "),
+        ("/image <path>", "share an image", "/image "),
         ("/clear", "clear messages", "/clear"),
         ("/help", "show this help", "/help"),
         ("/quit", "quit", "/quit"),
@@ -119,8 +176,10 @@ impl App {
 
     fn new(
         username: String,
+        token: String,
         writer: tokio::io::WriteHalf<ClientStream>,
-        server_rx: mpsc::UnboundedReceiver<String>
+        server_rx: mpsc::UnboundedReceiver<String>,
+        server_tx: mpsc::UnboundedSender<String>,
     ) -> Self {
         let default_theme = &THEMES[0];
         let mut ta = TextArea::default();
@@ -130,6 +189,7 @@ impl App {
 
         let mut app = Self {
             username,
+            token,
             rooms: vec!["general".to_string()],
             current_room: "general".to_string(),
             focus: FocusPane::Input,
@@ -139,6 +199,7 @@ impl App {
             textarea: ta,
             writer: Arc::new(Mutex::new(writer)),
             server_rx,
+            server_tx,
             sidebar_state: ListState::default().with_selected(Some(0)),
             sidebar_area: Rect::default(),
             messages_area: Rect::default(),
@@ -656,6 +717,32 @@ impl App {
                     self.show_help = true;
                     self.help_state.select(Some(0));
                 }
+                "/image" => {
+                    let path = parts.get(1).copied().unwrap_or("").trim();
+                    if path.is_empty() {
+                        self.ingest_msg(make_system_msg("Usage: /image <file_path>"), true);
+                    } else {
+                        let path = path.to_string();
+                        let token = self.token.clone();
+                        let writer = self.writer.clone();
+                        let err_tx = self.server_tx.clone();
+                        self.ingest_msg(make_system_msg("Uploading image..."), true);
+                        tokio::spawn(async move {
+                            match do_image_upload(&path, &token).await {
+                                Ok(resp) => {
+                                    let wire = format!(
+                                        "/image {} {} {} {}\n",
+                                        resp.url, resp.thumb_url, resp.width, resp.height
+                                    );
+                                    let _ = writer.lock().await.write_all(wire.as_bytes()).await;
+                                }
+                                Err(e) => {
+                                    let _ = err_tx.send(format!("Image upload failed: {}", e));
+                                }
+                            }
+                        });
+                    }
+                }
                 "/clear" => {
                     self.messages.retain(
                         |(msg, _)| msg.room != self.current_room && !msg.room.is_empty()
@@ -818,7 +905,18 @@ impl App {
                         }
                     }
                 }
-                MessageType::ImageMessage => {}
+                MessageType::ImageMessage => {
+                    let is_current_room = msg.room.is_empty() || msg.room == self.current_room;
+                    let room = msg.room.clone();
+                    let is_history = msg.is_history;
+                    if is_history && msg.username == self.username && !msg.id.is_empty() {
+                        self.read_message_ids.insert(msg.id.clone());
+                    }
+                    self.ingest_msg(msg, is_current_room || is_history);
+                    if is_current_room && !is_history {
+                        self.clear_room_read_state(&room);
+                    }
+                }
                 MessageType::TypingNotification => {
                     if msg.username != self.username {
                         let room = if msg.room.is_empty() {
@@ -854,6 +952,8 @@ impl App {
                     self.ingest_msg(msg, read);
                 }
             }
+        } else if !line.is_empty() {
+            self.ingest_msg(make_system_msg(line), true);
         }
     }
 
@@ -984,7 +1084,14 @@ impl App {
                     }
                     MessageType::SystemNotification =>
                         format_system_message(msg, self.theme.accent),
-                    MessageType::ImageMessage => unreachable!(),
+                    MessageType::ImageMessage => {
+                        let color = if msg.username == self.username {
+                            self.theme.primary
+                        } else {
+                            self.theme.secondary
+                        };
+                        format_image_message(msg, color, self.theme.accent)
+                    }
                     MessageType::RoomList => unreachable!(),
                     MessageType::ReadReceipt => unreachable!(),
                     MessageType::PresenceSync => unreachable!(),

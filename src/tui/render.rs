@@ -169,3 +169,32 @@ pub fn make_system_msg(text: &str) -> ChatMessage {
         height: 0,
     }
 }
+
+pub fn format_image_message(
+    msg: &ChatMessage,
+    color: Color,
+    mention_color: Color,
+) -> Vec<Line<'static>> {
+    let timestamp = msg.timestamp.chars().take(5).collect::<String>();
+    let ts_span = Span::styled(format!("[{}] ", timestamp), Style::default().fg(color));
+    let user_span = Span::styled(
+        format!("{} \u{25B6} ", msg.username.clone()),
+        Style::default().fg(color).add_modifier(Modifier::BOLD)
+    );
+    let label = if msg.content.is_empty() {
+        "[image]".to_string()
+    } else {
+        format!("[image: {}]", msg.content)
+    };
+    let img_span = Span::styled(
+        label,
+        Style::default().fg(mention_color).add_modifier(Modifier::BOLD)
+    );
+    let dim = if msg.width > 0 && msg.height > 0 {
+        format!(" ({}x{})", msg.width, msg.height)
+    } else {
+        String::new()
+    };
+    let dim_span = Span::styled(dim, Style::default().fg(color));
+    vec![Line::from(vec![ts_span, user_span, img_span, dim_span])]
+}

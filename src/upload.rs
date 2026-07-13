@@ -24,8 +24,8 @@ pub struct UploadState {
 pub struct UploadResponse {
     pub url: String,
     pub thumb_url: String,
-    pub width: i32,
-    pub height: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 fn uploads_dir() -> PathBuf {

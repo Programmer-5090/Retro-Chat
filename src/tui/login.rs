@@ -48,7 +48,7 @@ pub async fn run_login_ui(
     mut reader: BufReader<tokio::io::ReadHalf<ClientStream>>,
     mut writer: tokio::io::WriteHalf<ClientStream>
 ) -> Result<
-    (BufReader<tokio::io::ReadHalf<ClientStream>>, tokio::io::WriteHalf<ClientStream>),
+    (BufReader<tokio::io::ReadHalf<ClientStream>>, tokio::io::WriteHalf<ClientStream>, String),
     Box<dyn std::error::Error>
 > {
     enable_raw_mode()?;
@@ -139,7 +139,14 @@ pub async fn run_login_ui(
     disable_raw_mode()?;
     execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
 
-    Ok((reader, writer))
+    let token = prompt_msg.content
+        .split("Token: ")
+        .nth(1)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    Ok((reader, writer, token))
 }
 
 /// Reveals the ByteChat logo a couple of characters at a time. Any keypress
