@@ -40,7 +40,7 @@ use super::render::{
     make_system_msg,
     username_color,
 };
-use super::anims::{SpinningCube, MatrixRain, Starfield, SpinningTorus, SandSim};
+use super::anims::{ SpinningCube, MatrixRain, Starfield, SpinningTorus, SandSim };
 use super::types::{ AnimationKind, FocusPane, Theme, THEMES };
 
 pub async fn run_chat_ui(
@@ -602,7 +602,7 @@ impl App {
         {
             return None;
         }
-        let row = (y - (area.y + 1)) as usize + self.sidebar_state.offset();
+        let row = ((y - (area.y + 1)) as usize) + self.sidebar_state.offset();
         (row < self.rooms.len()).then_some(row)
     }
 
@@ -616,7 +616,7 @@ impl App {
         {
             return None;
         }
-        let row = (y - (area.y + 1)) as usize + self.help_state.offset();
+        let row = ((y - (area.y + 1)) as usize) + self.help_state.offset();
         (row < Self::HELP_COMMANDS.len()).then_some(row)
     }
 
@@ -696,7 +696,15 @@ impl App {
                         self.current_room = resolved.clone();
                         self.mark_all_read(&resolved).await;
                         self.scroll_offset = 0;
-                        self.ingest_msg(make_system_msg(&format!("Joined room: {}", dm_display_name(&resolved, &self.username))), true);
+                        self.ingest_msg(
+                            make_system_msg(
+                                &format!(
+                                    "Joined room: {}",
+                                    dm_display_name(&resolved, &self.username)
+                                )
+                            ),
+                            true
+                        );
                         let msg = format!("/join {}\n", resolved);
                         let _ = self.writer.lock().await.write_all(msg.as_bytes()).await;
                     }
@@ -708,7 +716,12 @@ impl App {
                         self.current_room = self.rooms[0].clone();
                         let cur = self.current_room.clone();
                         self.clear_room_read_state(&cur);
-                        self.ingest_msg(make_system_msg(&format!("Left room: {}", dm_display_name(&left, &self.username))), true);
+                        self.ingest_msg(
+                            make_system_msg(
+                                &format!("Left room: {}", dm_display_name(&left, &self.username))
+                            ),
+                            true
+                        );
                         let _ = self.writer.lock().await.write_all(b"/leave\n").await;
                     } else {
                         self.ingest_msg(make_system_msg("Cannot leave the last room."), true);
@@ -824,7 +837,8 @@ impl App {
                     }
                 }
                 MessageType::SystemNotification => {
-                    let read = msg.is_history || msg.room.is_empty() || msg.room == self.current_room;
+                    let read =
+                        msg.is_history || msg.room.is_empty() || msg.room == self.current_room;
                     if !msg.is_history {
                         match msg.content.as_str() {
                             "Joined the chat" | "Joined the room" => {
@@ -880,11 +894,7 @@ impl App {
         let pulse = |c: Color| -> Color {
             if let Color::Rgb(r, g, b) = c {
                 let f = 0.6 + 0.4 * ((self.pulse_tick as f64) * 0.04).sin();
-                Color::Rgb(
-                    (r as f64 * f) as u8,
-                    (g as f64 * f) as u8,
-                    (b as f64 * f) as u8,
-                )
+                Color::Rgb(((r as f64) * f) as u8, ((g as f64) * f) as u8, ((b as f64) * f) as u8)
             } else {
                 c
             }
@@ -922,7 +932,9 @@ impl App {
                 } else {
                     Style::default().fg(self.theme.primary)
                 };
-                ListItem::new(ratatui::text::Line::from(ratatui::text::Span::styled(display, style)))
+                ListItem::new(
+                    ratatui::text::Line::from(ratatui::text::Span::styled(display, style))
+                )
             })
             .collect();
 
@@ -937,7 +949,10 @@ impl App {
         let list = List::new(items)
             .block(block)
             .highlight_style(
-                Style::default().bg(self.theme.primary).fg(self.theme.bg).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(self.theme.primary)
+                    .fg(self.theme.bg)
+                    .add_modifier(Modifier::BOLD)
             )
             .highlight_symbol("\u{25B6} ");
 
@@ -1015,7 +1030,7 @@ impl App {
         // is ~1:2 w:h); the others use the full box.
         let square_area = {
             let box_w = (inner.height * 2).min(inner.width);
-            let x_off = (inner.width.saturating_sub(box_w)) / 2;
+            let x_off = inner.width.saturating_sub(box_w) / 2;
             Rect {
                 x: inner.x + x_off,
                 y: inner.y,
@@ -1116,8 +1131,7 @@ impl App {
     }
 
     fn render_help_popup(&mut self, f: &mut Frame, area: Rect) {
-        let mut items: Vec<ListItem> = Self::HELP_COMMANDS
-            .iter()
+        let mut items: Vec<ListItem> = Self::HELP_COMMANDS.iter()
             .map(|(cmd, desc, _)| {
                 let line = format!("{:<18}{}", cmd, desc);
                 ListItem::new(
@@ -1130,24 +1144,42 @@ impl App {
 
         let keybind_lines = [
             ratatui::text::Line::from(""),
-            ratatui::text::Line::from(vec![
-                ratatui::text::Span::styled("Ctrl+A", Style::default().fg(self.theme.accent).add_modifier(Modifier::BOLD)),
-                ratatui::text::Span::styled(" switch animation", Style::default().fg(self.theme.primary)),
-            ]),
-            ratatui::text::Line::from(vec![
-                ratatui::text::Span::styled("Ctrl+T", Style::default().fg(self.theme.accent).add_modifier(Modifier::BOLD)),
-                ratatui::text::Span::styled(" switch theme", Style::default().fg(self.theme.primary)),
-            ]),
+            ratatui::text::Line::from(
+                vec![
+                    ratatui::text::Span::styled(
+                        "Ctrl+A",
+                        Style::default().fg(self.theme.accent).add_modifier(Modifier::BOLD)
+                    ),
+                    ratatui::text::Span::styled(
+                        " switch animation",
+                        Style::default().fg(self.theme.primary)
+                    )
+                ]
+            ),
+            ratatui::text::Line::from(
+                vec![
+                    ratatui::text::Span::styled(
+                        "Ctrl+T",
+                        Style::default().fg(self.theme.accent).add_modifier(Modifier::BOLD)
+                    ),
+                    ratatui::text::Span::styled(
+                        " switch theme",
+                        Style::default().fg(self.theme.primary)
+                    )
+                ]
+            ),
         ];
         for line in &keybind_lines {
             items.push(ListItem::new(line.clone()));
         }
 
-        let popup_w = 44u16.min(area.width.saturating_sub(2));
-        let popup_h = ((Self::HELP_COMMANDS.len() as u16) + keybind_lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+        let popup_w = (44u16).min(area.width.saturating_sub(2));
+        let popup_h = ((Self::HELP_COMMANDS.len() as u16) + (keybind_lines.len() as u16) + 2).min(
+            area.height.saturating_sub(2)
+        );
         let popup_area = Rect {
-            x: area.x + (area.width.saturating_sub(popup_w)) / 2,
-            y: area.y + (area.height.saturating_sub(popup_h)) / 2,
+            x: area.x + area.width.saturating_sub(popup_w) / 2,
+            y: area.y + area.height.saturating_sub(popup_h) / 2,
             width: popup_w,
             height: popup_h,
         };
@@ -1166,7 +1198,10 @@ impl App {
         let list = List::new(items)
             .block(block)
             .highlight_style(
-                Style::default().bg(self.theme.primary).fg(self.theme.bg).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(self.theme.primary)
+                    .fg(self.theme.bg)
+                    .add_modifier(Modifier::BOLD)
             )
             .highlight_symbol("\u{25B6} ");
 

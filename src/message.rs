@@ -21,12 +21,22 @@ pub struct ChatMessage {
     /// to avoid treating a backlog replay as "new activity" in the room.
     #[serde(default)]
     pub is_history: bool,
+
+    #[serde(default)]
+    pub image_url: String,
+    #[serde(default)]
+    pub thumb_url: String,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Display)]
 pub enum MessageType {
     UserMessage,
     SystemNotification,
+    ImageMessage,
     RoomList,
     /// Broadcast by the server on behalf of a user who has just read one or
     /// more messages in a room. `content` is a comma-separated list of
