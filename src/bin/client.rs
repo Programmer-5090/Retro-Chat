@@ -34,8 +34,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let reader = tokio::io::BufReader::new(reader);
 
-    // Shows the ByteChat splash screen, then collects the register/login
-    // password inside the same terminal UI before handing off to the chat.
     let (reader, writer, token) = run_login_ui(reader, writer).await?;
 
     run_chat_ui(username, token, reader, writer).await

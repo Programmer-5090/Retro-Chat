@@ -6,8 +6,6 @@ use rand::Rng;
 #[derive(Debug, Clone, Serialize, Deserialize, Display)]
 #[display("{username}: {content}")]
 pub struct ChatMessage {
-    /// Unique id for this message. Empty for messages that never need to be
-    /// acknowledged (system notices, room lists, read receipts themselves).
     #[serde(default)]
     pub id: String,
     pub username: String,
@@ -16,12 +14,8 @@ pub struct ChatMessage {
     pub message_type: MessageType,
     #[serde(default)]
     pub room: String,
-    /// True when this message is being replayed from history (e.g. right
-    /// after joining a room) rather than delivered live. Used by the client
-    /// to avoid treating a backlog replay as "new activity" in the room.
     #[serde(default)]
     pub is_history: bool,
-
     #[serde(default)]
     pub image_url: String,
     #[serde(default)]
@@ -38,18 +32,9 @@ pub enum MessageType {
     SystemNotification,
     ImageMessage,
     RoomList,
-    /// Broadcast by the server on behalf of a user who has just read one or
-    /// more messages in a room. `content` is a comma-separated list of
-    /// message ids that are now considered read; `username` is the reader.
     ReadReceipt,
-    /// Sent by the server to tell clients who is currently online (from Redis
-    /// presence keys). `content` is a comma-separated list of usernames.
     PresenceSync,
-    /// Broadcast by the server while a user is typing in a room. Receiving
-    /// clients show an animated indicator. The sender skips it.
     TypingNotification,
-    /// Sent by the server during login to tell the client which room it
-    /// should consider active. `content` is the room name.
     SetActiveRoom,
 }
 
@@ -90,7 +75,7 @@ pub fn build_room_notice(text: &str, room: &str) -> String {
 }
 
 /// Returns a display-friendly name for a room. DM rooms like
-/// `__dm__alice_bob` are shown as the *other* user's name from `username`'s
+/// `__dm__alice_bob` are shown as the "other" user's name from `username`'s
 /// perspective (e.g. "bob" for alice, "alice" for bob). Non-DM rooms are
 /// returned as-is.
 pub fn dm_display_name<'a>(room: &'a str, username: &str) -> &'a str {
@@ -106,10 +91,6 @@ pub fn dm_display_name<'a>(room: &'a str, username: &str) -> &'a str {
     room
 }
 
-/// Builds a read-receipt wire message (no trailing newline — intended for
-/// `AppState::send_to_room`, which appends its own newline when writing).
-/// `reader` has read the messages with the given `ids` in `room`; senders
-/// still present in that room will flip those messages to the "read" color.
 pub fn build_read_receipt(reader: &str, room: &str, ids: &[String]) -> String {
     let msg = ChatMessage {
         id: String::new(),

@@ -99,7 +99,7 @@ async fn handle_upload(
     let dims = (img.width(), img.height());
 
     let orig = original_name.unwrap_or_else(|| "upload".to_string());
-    let thumb = img.resize(128, 128, FilterType::Lanczos3);
+    let thumb = img.resize(400, 400, FilterType::Lanczos3);
 
     let kind = infer::get(&bytes)
         .ok_or((StatusCode::BAD_REQUEST, "could not determine file type".to_string()))?;

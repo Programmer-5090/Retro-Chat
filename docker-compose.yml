@@ -4,14 +4,17 @@ services:
     restart: unless-stopped
     ports:
       - "8082:8082"
+      - "8083:8083"
     environment:
       DATABASE_URL: postgres://retrochat:retrochat@postgres:5432/retrochat
       REDIS_URL: redis://redis:6379
       BIND_ADDR: 0.0.0.0:8082
+      UPLOAD_BIND_ADDR: 0.0.0.0:8083
       # NO_TLS: 1
     volumes:
       - ./cert.pem:/usr/local/bin/cert.pem
       - ./key.pem:/usr/local/bin/key.pem
+      - uploads:/usr/local/bin/uploads
     depends_on:
       - postgres
       - redis
@@ -36,3 +39,4 @@ services:
 
 volumes:
   pgdata:
+  uploads:

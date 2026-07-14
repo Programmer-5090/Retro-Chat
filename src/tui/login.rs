@@ -41,7 +41,7 @@ impl Drop for CleanGuard {
 /// Shows the ByteChat splash screen with a typewriter reveal, then collects
 /// the account password (register or login, per the server's first message)
 /// inside the same terminal UI. Returns the reader/writer once the server
-/// confirms auth with a session token, ready to hand off to `run_chat_ui`.
+/// confirms auth with a session token, ready to give to run_chat_ui.
 pub async fn run_login_ui(
     mut reader: BufReader<tokio::io::ReadHalf<ClientStream>>,
     mut writer: tokio::io::WriteHalf<ClientStream>
@@ -57,8 +57,6 @@ pub async fn run_login_ui(
 
     run_splash(&mut terminal)?;
 
-    // The server's first line tells us whether to /register or /login, and
-    // carries the human-readable prompt text to show the user.
     let mut line = String::new();
     reader.read_line(&mut line).await?;
     let mut prompt_msg: ChatMessage = serde_json::from_str(line.trim())?;
@@ -178,7 +176,6 @@ fn run_splash(
 
     terminal.draw(|f| draw_splash(f, &lines, lines.len(), 0))?;
 
-    // Hold on the finished logo briefly, skippable with any key.
     let hold_until = Instant::now() + Duration::from_millis(700);
     while Instant::now() < hold_until {
         if event::poll(Duration::from_millis(16))? {

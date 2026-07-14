@@ -96,8 +96,7 @@ impl SandSim {
         }
 
         // Once the floor is completely packed, clear it so grains keep
-        // falling forever instead of the whole box filling up and going
-        // static.
+        // falling forever
         let bottom = h - 1;
         if (0..w).all(|x| self.grid[self.idx(x, bottom)] != 0) {
             for x in 0..w {

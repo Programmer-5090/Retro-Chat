@@ -22,8 +22,12 @@ use ratatui::{
     prelude::{ CrosstermBackend, Terminal },
     style::{ Color, Modifier, Style },
     symbols::border,
+    text::Line,
     widgets::{ Block, Borders, Clear, List, ListItem, ListState, Paragraph, Sparkline, Wrap },
 };
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::Protocol;
+use ratatui_image::{ Image as RatatuiImage, Resize };
 use tokio::{ io::{ AsyncBufReadExt, AsyncWriteExt, BufReader }, sync::{ Mutex, mpsc } };
 use tui_textarea::TextArea;
 
@@ -37,7 +41,7 @@ use super::render::{
     format_title,
     format_system_message,
     format_user_message,
-    format_image_message,
+    format_image_header,
     make_system_msg,
     username_color,
 };
@@ -138,8 +142,6 @@ pub struct App {
     help_state: ListState,
     help_area: Rect,
     unread_rooms: HashSet<String>,
-    /// Ids of your own messages that the recipient has read (per the
-    /// ReadReceipt broadcasts), rendered in the "read" color.
     read_message_ids: HashSet<String>,
     message_times: VecDeque<Instant>,
     sparkline_data: VecDeque<u16>,
@@ -157,6 +159,18 @@ pub struct App {
     sand: SandSim,
     anim_kind: AnimationKind,
     start_time: Instant,
+
+    // Image rendering
+    picker: Picker,
+    image_cache: HashMap<String, Protocol>,
+    inflight_images: HashSet<String>,
+    image_rx: mpsc::UnboundedReceiver<(String, Protocol)>,
+    image_results_tx: mpsc::UnboundedSender<(String, Protocol)>,
+    image_cell_height: u16,
+    image_cell_width: u16,
+    last_resize: Instant,
+    dirty: bool,
+
 }
 
 impl App {
@@ -186,6 +200,8 @@ impl App {
         ta.set_cursor_line_style(Style::default());
         ta.set_style(Style::default().fg(default_theme.primary).bg(default_theme.bg));
         ta.set_cursor_style(Style::default().bg(default_theme.primary));
+
+        let (image_results_tx, image_rx) = mpsc::unbounded_channel();
 
         let mut app = Self {
             username,
@@ -225,6 +241,16 @@ impl App {
             sand: SandSim::new(),
             anim_kind: AnimationKind::Cube,
             start_time: Instant::now(),
+            picker: Picker::halfblocks(),
+            image_cache: HashMap::new(),
+            inflight_images: HashSet::new(),
+            image_rx,
+            image_results_tx,
+            image_cell_height: 8,
+            image_cell_width: 16,
+            last_resize: Instant::now(),
+            dirty: true,
+
         };
         app.cube.color = default_theme.primary;
         app.matrix_rain.color = default_theme.primary;
@@ -244,6 +270,10 @@ impl App {
         let mut stdout = std::io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+
+        // Everyday I am reminded of the mistake of being a windows user (* ￣︿￣)
+        self.picker = Picker::halfblocks(); // <---- I couldn't for my life get this working, so i had to use this 
+        self.update_image_cell_size();
 
         tokio::spawn(async move {
             let mut lines = reader.lines();
@@ -275,10 +305,18 @@ impl App {
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut last_sparkline_tick = Instant::now();
+        let mut last_anim_tick = Instant::now();
+        let anim_interval = Duration::from_millis(100);
         loop {
-            terminal.draw(|f| self.render(f))?;
+            let now = Instant::now();
+            let anim_tick = now.duration_since(last_anim_tick) >= anim_interval;
 
-            self.pulse_tick = self.pulse_tick.wrapping_add(1);
+            if anim_tick {
+                self.pulse_tick = self.pulse_tick.wrapping_add(1);
+                last_anim_tick = Instant::now();
+                self.dirty = true;
+            }
+
             let now = Instant::now();
             if now - last_sparkline_tick >= Duration::from_secs(1) {
                 let cutoff = now - Duration::from_secs(2);
@@ -289,6 +327,7 @@ impl App {
                 self.sparkline_data.push_back(count);
                 self.sparkline_data.pop_front();
                 last_sparkline_tick = now;
+                self.dirty = true;
             }
 
             // Typing indicator debounce
@@ -302,7 +341,6 @@ impl App {
                 since_typing_sent > Duration::from_secs(3)
             {
                 let wire = if input_text.starts_with('/') {
-                    // Only send typing for /dm composition, not other commands
                     input_text
                         .strip_prefix("/dm ")
                         .and_then(|s| s.split_whitespace().next())
@@ -322,17 +360,23 @@ impl App {
                 }
             }
             // Clean stale typing indicators
+            let had_typing = !self.typing_users.is_empty();
             self.typing_users.retain(|_, (_, t)| now - *t < Duration::from_secs(4));
+            if had_typing != !self.typing_users.is_empty() {
+                self.dirty = true;
+            }
 
-            if event::poll(Duration::from_millis(16))? {
+            if event::poll(Duration::from_millis(32))? {
                 match event::read()? {
                     Event::Key(key) => {
                         if key.kind == KeyEventKind::Press {
                             self.handle_key(key).await;
+                            self.dirty = true;
                         }
                     }
                     Event::Mouse(mouse) => {
                         self.handle_mouse(mouse).await;
+                        self.dirty = true;
                     }
                     Event::Paste(data) => {
                         if self.focus == FocusPane::Input {
@@ -346,6 +390,7 @@ impl App {
                             if current_len + paste_len <= 500 {
                                 self.textarea.insert_str(text);
                                 self.last_keypress = Instant::now();
+                                self.dirty = true;
                             }
                         }
                     }
@@ -354,7 +399,10 @@ impl App {
             }
             loop {
                 match self.server_rx.try_recv() {
-                    Ok(line) => self.handle_server_message(&line).await,
+                    Ok(line) => {
+                        self.handle_server_message(&line).await;
+                        self.dirty = true;
+                    }
                     Err(mpsc::error::TryRecvError::Empty) => {
                         break;
                     }
@@ -365,8 +413,23 @@ impl App {
                     }
                 }
             }
+            loop {
+                match self.image_rx.try_recv() {
+                    Ok((id, proto)) => {
+                        self.image_cache.insert(id, proto);
+                        self.dirty = true;
+                    }
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => break,
+                }
+            }
             if self.should_quit {
                 break;
+            }
+
+            if self.dirty {
+                terminal.draw(|f| self.render(f))?;
+                self.dirty = false;
             }
         }
         Ok(())
@@ -384,15 +447,14 @@ impl App {
         }
 
         self.messages.push((msg, was_unread));
-        let visible: usize = 20;
+        self.dirty = true;
+        let visible = self.messages_area.height.saturating_sub(2) as usize;
+        let visible = if visible == 0 { 20 } else { visible };
         self.clamp_scroll(visible);
     }
 
-    /// Locally resets any lingering "unread" color for messages in `room`
-    /// back to normal, without notifying anyone. Used when a live message
-    /// arrives in the room you're currently viewing — per spec, the room
-    /// being actively watched means older unread messages should no longer
-    /// look unread.
+    /// Locally resets any lingering "unread" color for messages in the room
+    /// back to normal, without notifying anyone
     fn clear_room_read_state(&mut self, room: &str) {
         for pair in &mut self.messages {
             let same_room =
@@ -404,7 +466,7 @@ impl App {
         self.unread_rooms.remove(room);
     }
 
-    /// Ids of currently-unread messages authored by someone else in `room`,
+    /// Ids of currently-unread messages written by someone else in the room,
     /// used to build a read-receipt payload.
     fn collect_unread_ids(&self, room: &str) -> Vec<String> {
         self.messages
@@ -419,7 +481,7 @@ impl App {
             .collect()
     }
 
-    /// Marks everything in `room` as read locally AND tells the server, so
+    /// Marks everything in the room as read locally and tells the server, so
     /// the original senders can see their messages flip to the "read"
     /// color.
     async fn mark_all_read(&mut self, room: &str) {
@@ -442,15 +504,6 @@ impl App {
             .filter(move |(msg, _)| {
                 msg.room == room || (msg.room.is_empty() && room == self.current_room)
             })
-    }
-
-    fn room_message_count(&self, room: &str) -> usize {
-        self.messages
-            .iter()
-            .filter(
-                |(msg, _)| msg.room == room || (msg.room.is_empty() && room == self.current_room)
-            )
-            .count()
     }
 
     async fn handle_key(&mut self, key: event::KeyEvent) {
@@ -531,7 +584,7 @@ impl App {
             FocusPane::Messages =>
                 match key.code {
                     KeyCode::Up => {
-                        let visible = 20;
+                        let visible = self.messages_area.height.saturating_sub(2) as usize;
                         self.scroll_up(visible);
                     }
                     KeyCode::Down => {
@@ -628,7 +681,8 @@ impl App {
                     let i = self.sidebar_state.selected().unwrap_or(0);
                     self.sidebar_state.select(Some(i.saturating_sub(1)));
                 } else {
-                    self.scroll_up(20);
+                    let visible = self.messages_area.height.saturating_sub(2) as usize;
+                    self.scroll_up(visible);
                 }
             }
             MouseEventKind::ScrollDown => {
@@ -969,8 +1023,9 @@ impl App {
     }
 
     fn scroll_up(&mut self, visible_height: usize) {
-        let count = self.room_message_count(&self.current_room);
-        let max = count.saturating_sub(visible_height) as u16;
+        let content_width = self.messages_area.width.saturating_sub(2) as usize;
+        let total = self.total_content_height(content_width as u16);
+        let max = total.saturating_sub(visible_height as u16) as u16;
         self.scroll_offset = (self.scroll_offset + 1).min(max);
     }
 
@@ -981,9 +1036,109 @@ impl App {
     }
 
     fn clamp_scroll(&mut self, visible_height: usize) {
-        let count = self.room_message_count(&self.current_room);
-        let max = count.saturating_sub(visible_height) as u16;
+        let content_width = self.messages_area.width.saturating_sub(2) as usize;
+        let total = self.total_content_height(content_width as u16);
+        let max = total.saturating_sub(visible_height as u16) as u16;
         self.scroll_offset = self.scroll_offset.min(max);
+    }
+
+    fn update_image_cell_size(&mut self) {
+        let (fw, fh) = self.picker.font_size();
+        let thumb_px = 128u32;
+        self.image_cell_height = ((thumb_px / fh as u32).max(1)) as u16;
+        self.image_cell_width = ((thumb_px / fw as u32).max(1)) as u16;
+    }
+
+    fn message_line_height(&self, msg: &ChatMessage, content_width: u16) -> u16 {
+        match msg.message_type {
+            MessageType::ImageMessage => {
+                let header_lines = 1u16;
+                header_lines + self.image_cell_height
+            }
+            MessageType::SystemNotification => {
+                if msg.content.is_empty() { 1 } else { msg.content.lines().count() as u16 }
+            }
+            MessageType::UserMessage => {
+                let ts_len = 5usize;
+                let user_len = msg.username.len();
+                let overhead = ts_len + user_len + 5;
+                let wrap_width = content_width as usize;
+                if wrap_width == 0 {
+                    return 1;
+                }
+                let lines: Vec<&str> = msg.content.lines().collect();
+                if lines.is_empty() {
+                    return 1;
+                }
+                let mut total = 0u16;
+                for line in &lines {
+                    let line_chars = line.chars().count();
+                    if line_chars == 0 {
+                        total += 1;
+                    } else {
+                        let first_wrap = wrap_width.saturating_sub(overhead);
+                        if first_wrap == 0 {
+                            total += 1;
+                        } else if line_chars <= first_wrap {
+                            total += 1;
+                        } else {
+                            total += 1;
+                            let remaining = line_chars - first_wrap;
+                            total += (remaining as u16 + wrap_width as u16 - 1) / wrap_width as u16;
+                        }
+                    }
+                }
+                total.max(1)
+            }
+            _ => 1,
+        }
+    }
+
+    fn total_content_height(&self, content_width: u16) -> u16 {
+        self.messages_for_room(&self.current_room)
+            .map(|(msg, _)| self.message_line_height(msg, content_width))
+            .sum()
+    }
+
+    fn rebuild_image_protocols(&mut self) {
+        let old_cache = std::mem::take(&mut self.image_cache);
+        for (id, _old_proto) in old_cache {
+            if let Some(msg) = self.messages.iter().find(|(m, _)| m.id == id) {
+                let msg = &msg.0;
+                if !msg.thumb_url.is_empty() {
+                    self.inflight_images.remove(&id);
+                    self.spawn_image_fetch(id, msg.thumb_url.clone());
+                }
+            }
+        }
+    }
+
+    fn spawn_image_fetch(&self, msg_id: String, thumb_url: String) {
+        let tx = self.image_results_tx.clone();
+        let picker = self.picker.clone();
+        let upload_base = std::env::var("UPLOAD_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8083".to_string());
+        let url = format!("{}{}", upload_base, thumb_url);
+        let cell_w = self.image_cell_width;
+        let cell_h = self.image_cell_height;
+
+        tokio::spawn(async move {
+            let Ok(resp) = reqwest::get(&url).await else { return };
+            let Ok(bytes) = resp.bytes().await else { return };
+
+            let proto = tokio::task::spawn_blocking(move || {
+                let img = image::load_from_memory(&bytes).ok()?;
+                let rect = ratatui::layout::Rect::new(0, 0, cell_w, cell_h);
+                picker.new_protocol(img, rect, Resize::Fit(None)).ok()
+            })
+            .await
+            .ok()
+            .flatten();
+
+            if let Some(proto) = proto {
+                let _ = tx.send((msg_id, proto));
+            }
+        });
     }
 
     fn render_title_bar(&self, f: &mut Frame, area: Rect) {
@@ -1005,8 +1160,6 @@ impl App {
     fn render_sidebar(&mut self, f: &mut Frame, area: Rect) {
         self.sidebar_area = area;
 
-        // Keep the selection in range if rooms were added/removed since the
-        // last frame (e.g. a fresh RoomList from the server).
         let max_select = self.rooms.len().saturating_sub(1);
         match self.sidebar_state.selected() {
             Some(i) if i > max_select => self.sidebar_state.select(Some(max_select)),
@@ -1057,9 +1210,62 @@ impl App {
 
     fn render_messages(&mut self, f: &mut Frame, area: Rect) {
         self.messages_area = area;
-        let lines: Vec<ratatui::text::Line> = self
-            .messages_for_room(&self.current_room)
-            .flat_map(|(msg, _)| {
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .border_style(
+                border_style(FocusPane::Messages, self.focus, self.pulse_tick, &self.theme)
+            )
+            .title(format!(" #{} ", dm_display_name(&self.current_room, &self.username)));
+        let content_area = block.inner(area);
+        f.render_widget(block, area);
+
+        if content_area.height == 0 || content_area.width == 0 {
+            return;
+        }
+
+        let room_msgs: Vec<_> = self.messages_for_room(&self.current_room).cloned().collect();
+        if room_msgs.is_empty() {
+            return;
+        }
+
+        let content_width = content_area.width as usize;
+        let mut msg_heights: Vec<u16> = Vec::with_capacity(room_msgs.len());
+        let mut total_height = 0u16;
+        for (msg, _) in &room_msgs {
+            let h = self.message_line_height(msg, content_width as u16);
+            msg_heights.push(h);
+            total_height = total_height.saturating_add(h);
+        }
+
+        let visible_height = content_area.height;
+        let max_scroll = total_height.saturating_sub(visible_height);
+        let render_scroll = if self.scroll_offset == 0 {
+            max_scroll
+        } else {
+            self.scroll_offset.min(max_scroll)
+        };
+
+        let vis_start = total_height.saturating_sub(render_scroll + visible_height);
+        let vis_end = total_height.saturating_sub(render_scroll);
+
+        let mut current_y = 0u16;
+        for (i, (msg, _)) in room_msgs.iter().enumerate() {
+            let h = msg_heights[i];
+            let msg_top = current_y;
+            let msg_bottom = current_y.saturating_add(h);
+
+            if msg_bottom > vis_start && msg_top < vis_end {
+                let screen_y = content_area.y + msg_top.saturating_sub(vis_start);
+                let max_h = content_area.height.saturating_sub(screen_y - content_area.y);
+                let msg_area = Rect {
+                    x: content_area.x,
+                    y: screen_y,
+                    width: content_area.width,
+                    height: h.min(max_h),
+                };
+
                 match msg.message_type {
                     MessageType::UserMessage => {
                         let color = if msg.username == self.username {
@@ -1075,49 +1281,57 @@ impl App {
                             msg.username != self.username &&
                             self.online_users.contains(&msg.username)
                         ).then(|| username_color(&msg.username));
-                        format_user_message(msg, color, self.theme.accent, dot_color)
+                        let lines = format_user_message(msg, color, self.theme.accent, dot_color);
+                        let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+                        f.render_widget(para, msg_area);
                     }
-                    MessageType::SystemNotification =>
-                        format_system_message(msg, self.theme.accent),
+                    MessageType::SystemNotification => {
+                        let lines = format_system_message(msg, self.theme.accent);
+                        let para = Paragraph::new(lines);
+                        f.render_widget(para, msg_area);
+                    }
                     MessageType::ImageMessage => {
                         let color = if msg.username == self.username {
                             self.theme.primary
                         } else {
                             self.theme.secondary
                         };
-                        format_image_message(msg, color, self.theme.accent)
+                        let header_lines = format_image_header(msg, color);
+                        let header_area = Rect { height: 1.min(msg_area.height), ..msg_area };
+                        let header_para = Paragraph::new(header_lines);
+                        f.render_widget(header_para, header_area);
+
+                        let img_area = Rect {
+                            y: msg_area.y + 1.min(msg_area.height),
+                            height: msg_area.height.saturating_sub(1),
+                            ..msg_area
+                        };
+
+                        if let Some(protocol) = self.image_cache.get(&msg.id) {
+                            let img_widget = RatatuiImage::new(protocol);
+                            f.render_widget(img_widget, img_area);
+                        } else {
+                            if !self.inflight_images.contains(&msg.id) && !msg.id.is_empty() {
+                                self.inflight_images.insert(msg.id.clone());
+                                self.spawn_image_fetch(msg.id.clone(), msg.thumb_url.clone());
+                            }
+                            let placeholder = Paragraph::new(
+                                Line::from(
+                                    ratatui::text::Span::styled(
+                                        "  \u{2593}\u{2593} image \u{2593}\u{2593}",
+                                        Style::default().fg(self.theme.accent)
+                                    )
+                                )
+                            );
+                            f.render_widget(placeholder, img_area);
+                        }
                     }
-                    MessageType::RoomList => unreachable!(),
-                    MessageType::ReadReceipt => unreachable!(),
-                    MessageType::PresenceSync => unreachable!(),
-                    MessageType::TypingNotification => unreachable!(),
-                    MessageType::SetActiveRoom => unreachable!(),
+                    _ => {}
                 }
-            })
-            .collect();
+            }
 
-        let total_lines = lines.len() as u16;
-        let visible_height = area.height.saturating_sub(2);
-        let max_scroll = total_lines.saturating_sub(visible_height);
-        let render_scroll = if self.scroll_offset == 0 {
-            max_scroll
-        } else {
-            self.scroll_offset.min(max_scroll)
-        };
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_set(border::ROUNDED)
-            .border_style(
-                border_style(FocusPane::Messages, self.focus, self.pulse_tick, &self.theme)
-            )
-            .title(format!(" #{} ", dm_display_name(&self.current_room, &self.username)));
-
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false })
-            .scroll((render_scroll, 0));
-        f.render_widget(paragraph, area);
+            current_y = msg_bottom;
+        }
     }
 
     fn render_animations(&mut self, f: &mut Frame, area: Rect) {
@@ -1337,13 +1551,23 @@ impl App {
         let sidebar_vertical = Layout::vertical([Constraint::Min(0), Constraint::Length(6)]);
         let [sidebar_area, anim_area] = sidebar_vertical.areas(sidebar_col);
 
+        let now = Instant::now();
+        if now.duration_since(self.last_resize) > Duration::from_millis(300) {
+            let old_h = self.image_cell_height;
+            self.update_image_cell_size();
+            if self.image_cell_height != old_h && !self.image_cache.is_empty() {
+                self.rebuild_image_protocols();
+            }
+            self.last_resize = now;
+        }
+
         self.render_title_bar(f, title_area);
         self.render_sidebar(f, sidebar_area);
-        self.render_messages(f, messages_area);
         self.render_animations(f, anim_area);
         self.input_area = input_area;
         self.render_input(f, input_area);
         self.render_status_bar(f, status_area);
+        self.render_messages(f, messages_area);
 
         if self.show_help {
             self.render_help_popup(f, area);

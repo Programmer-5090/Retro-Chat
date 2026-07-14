@@ -170,6 +170,7 @@ pub fn make_system_msg(text: &str) -> ChatMessage {
     }
 }
 
+#[allow(dead_code)]
 pub fn format_image_message(
     msg: &ChatMessage,
     color: Color,
@@ -191,4 +192,17 @@ pub fn format_image_message(
     let line2 = Line::from(vec![img_span]);
 
     vec![line1, line2]
+}
+
+pub fn format_image_header(
+    msg: &ChatMessage,
+    color: Color,
+) -> Vec<Line<'static>> {
+    let timestamp = msg.timestamp.chars().take(5).collect::<String>();
+    let ts_span = Span::styled(format!("[{}] ", timestamp), Style::default().fg(color));
+    let user_span = Span::styled(
+        format!("{} \u{25B6}", msg.username.clone()),
+        Style::default().fg(color).add_modifier(Modifier::BOLD)
+    );
+    vec![Line::from(vec![ts_span, user_span])]
 }

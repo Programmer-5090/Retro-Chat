@@ -25,13 +25,10 @@ impl AppState {
         })
     }
 
-    /// Subscribes `username` to live delivery for `room` WITHOUT removing
+    /// Subscribes `username` to live delivery for `room` without removing
     /// them from any other room they're already subscribed to. A connected
     /// user can be subscribed to several rooms at once (their DMs, plus
-    /// whatever channels they've joined) — this is what lets messages sent
-    /// to a room the user isn't currently *viewing* still reach their
-    /// client so the unread badge/dimmed-color logic has something to react
-    /// to. Idempotent: re-subscribing just refreshes the sender handle.
+    /// whatever channels they've joined)
     pub async fn subscribe_room(
         &self,
         username: &str,
@@ -45,8 +42,8 @@ impl AppState {
     }
 
     /// Removes `username` from live delivery for `room` only — their other
-    /// room subscriptions are untouched. Use this for an explicit /leave;
-    /// switching which room you're viewing should NOT call this.
+    /// room subscriptions are untouched. An explicit /leave.
+    /// switching which room you're viewing should not call this.
     pub async fn unsubscribe_room(&self, username: &str, room: &str) {
         let mut rooms = self.rooms.write().await;
         if let Some(members) = rooms.get_mut(room) {
@@ -55,15 +52,12 @@ impl AppState {
     }
 
     /// Sets which room `username` is currently viewing. This only affects
-    /// where their plain-text messages get routed (`get_user_room`) — it is
-    /// intentionally independent of live-delivery subscriptions, so
-    /// changing your active room never causes you to stop receiving
-    /// messages (and unread badges) from your other rooms.
+    /// where their plain-text messages get routed (`get_user_room`)
     pub async fn set_active_room(&self, username: &str, room: &str) {
         self.user_rooms.write().await.insert(username.to_string(), room.to_string());
     }
 
-    /// Convenience used at initial connect / new-room creation: subscribes
+    /// Convenience used at initial connect / new-room creation. subscribes
     /// to `room` for live delivery AND makes it the active room in one call.
     pub async fn join_room(&self, username: &str, room: &str, tx: mpsc::UnboundedSender<String>) {
         self.subscribe_room(username, room, tx).await;

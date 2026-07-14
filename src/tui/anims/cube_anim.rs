@@ -8,13 +8,11 @@ use ratatui::{
 
 use crate::tui::types::THEMES;
 
-/// 8 corners of a unit cube centered on the origin.
 const VERTS: [[f64; 3]; 8] = [
     [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0],
     [-1.0, -1.0,  1.0], [1.0, -1.0,  1.0], [1.0, 1.0,  1.0], [-1.0, 1.0,  1.0],
 ];
 
-/// Pairs of vertex indices that form the 12 edges of the cube.
 const EDGES: [(usize, usize); 12] = [
     (0, 1), (1, 2), (2, 3), (3, 0), // back face
     (4, 5), (5, 6), (6, 7), (7, 4), // front face
@@ -30,13 +28,10 @@ impl SpinningCube {
     pub fn new() -> Self {
         Self {
             scale: 25.0,
-            // dim amber so it reads as "background", not foreground content
             color: THEMES[0].primary,
         }
     }
 
-    /// `t` is elapsed seconds — pull this from an `Instant` you already keep
-    /// in your tick/app loop (e.g. `app.start_time.elapsed().as_secs_f64()`).
     pub fn render(&self, frame: &mut Frame, area: Rect, t: f64) {
         let (ax, ay, az) = (t * 0.6, t * 0.9, t * 0.3);
         let rotated: Vec<[f64; 3]> = VERTS.iter().map(|v| rotate(*v, ax, ay, az)).collect();
@@ -45,19 +40,12 @@ impl SpinningCube {
             .map(|v| project(v[0], v[1], v[2], self.scale))
             .collect();
 
-        // Fit the camera bounds to the cube's current projected extent (plus a
-        // small margin) instead of hard-coding them to `self.scale`. Bounds
-        // equal to `scale` while the projection factor is also driven by
-        // `scale` cancel each other out, so the cube always occupied the same
-        // small fraction of the box no matter how big `scale` was.
         let max_extent = projected
             .iter()
             .fold(0.0_f64, |m, (x, y)| m.max(x.abs()).max(y.abs()))
             .max(1.0);
         let half_x = max_extent * 1.25;
 
-        // Keep the cube visually square by accounting for terminal cell aspect
-        // (Braille: 2 dots wide, 4 dots tall per cell)
         let w = area.width.max(1) as f64;
         let h = area.height.max(1) as f64;
         let half_y = half_x * (2.0 * h) / w; // compensate for cell dot ratio

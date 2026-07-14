@@ -232,8 +232,8 @@ async fn handle_leave_command(
 async fn replay_history(state: &AppState, room_name: &str, out_tx: &mpsc::UnboundedSender<String>) {
     let room_id: i32 = state.get_or_create_db_room(room_name, "system").await;
     let rows = sqlx
-        ::query_as::<_, (String, String, chrono::DateTime<chrono::Utc>, String)>(
-            "SELECT username, content, created_at, message_type FROM messages WHERE room_id = $1 ORDER BY created_at DESC LIMIT 50"
+        ::query_as::<_, (String, String, chrono::DateTime<chrono::Utc>, String, Option<String>, Option<String>, Option<i32>, Option<i32>)>(
+            "SELECT username, content, created_at, message_type, image_url, thumb_url, width, height FROM messages WHERE room_id = $1 ORDER BY created_at DESC LIMIT 50"
         )
         .bind(room_id)
         .fetch_all(&state.pool).await
@@ -247,14 +247,15 @@ async fn replay_history(state: &AppState, room_name: &str, out_tx: &mpsc::Unboun
             timestamp: row.2.format("%H:%M:%S").to_string(),
             message_type: match row.3.as_str() {
                 "UserMessage" => MessageType::UserMessage,
+                "ImageMessage" => MessageType::ImageMessage,
                 _ => MessageType::SystemNotification,
             },
             room: room_name.to_string(),
             is_history: true,
-            image_url: String::new(),
-            thumb_url: String::new(),
-            width: 0,
-            height: 0,
+            image_url: row.4.unwrap_or_default(),
+            thumb_url: row.5.unwrap_or_default(),
+            width: row.6.unwrap_or(0) as u32,
+            height: row.7.unwrap_or(0) as u32,
         };
         let msg_json = serde_json::to_string(&msg).unwrap();
         let _ = out_tx.send(msg_json);
@@ -388,10 +389,6 @@ async fn handle_msg_command(
     state.save_room_membership(target, &dm_room).await;
 
     if let Some(target_tx) = state.get_sender(target).await {
-        // Subscribe the recipient to live delivery for this DM room right
-        // away (not just DB membership) — so once they check their
-        // sidebar, further replies here show up (and flag unread) without
-        // them having to reconnect first.
         state.subscribe_room(target, &dm_room, target_tx.clone()).await;
         let whisper = build_notice(
             &format!("DM from {}: '{}'. Check your sidebar to join.", username, dm_text)
@@ -593,8 +590,7 @@ async fn handle_regular_message(
 
 /// Handles the client's `/read <room> <id1,id2,...>` command by relaying a
 /// read receipt to everyone currently in that room. Silent on malformed
-/// input — this is a background housekeeping command, not something a user
-/// types directly.
+/// input
 async fn handle_read_command(state: &AppState, username: &str, input: &str) {
     let mut parts = input.splitn(2, ' ');
     let room = match parts.next() {
