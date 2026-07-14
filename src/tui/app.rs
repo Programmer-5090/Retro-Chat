@@ -737,6 +737,8 @@ impl App {
                 self.current_room = room.clone();
                 self.scroll_offset = 0;
                 self.mark_all_read(&room).await;
+                let wire = format!("/switch {}\n", room);
+                let _ = self.writer.lock().await.write_all(wire.as_bytes()).await;
             }
         }
     }

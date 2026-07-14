@@ -229,6 +229,14 @@ async fn handle_leave_command(
     send_room_list(state, username, out_tx).await;
 }
 
+async fn handle_switch_command(state: &AppState, username: &str, input: &str) {
+    let room_name = input.trim().to_string();
+    if room_name.is_empty() {
+        return;
+    }
+    state.set_active_room(username, &room_name).await;
+}
+
 async fn replay_history(state: &AppState, room_name: &str, out_tx: &mpsc::UnboundedSender<String>) {
     let room_id: i32 = state.get_or_create_db_room(room_name, "system").await;
     let rows = sqlx
@@ -914,6 +922,8 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                         } else {
                             send_notice(&mut writer, "Usage: /image <url> <thumb_url> [width] [height]").await;
                         }
+                    } else if let Some(args) = input.strip_prefix("/switch ") {
+                        handle_switch_command(&state, &username, args).await;
                     } else if input == "/help" {
                         send_notice(&mut writer, "Commands: /join <room>, /rooms, /msg <user> <text>, /image <url> <thumb_url>, /help | Admin: /mute, /unmute, /ban, /unban").await;
                     } else {
