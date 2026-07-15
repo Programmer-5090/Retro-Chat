@@ -51,12 +51,7 @@ fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
 
 pub fn format_title(username: &str, color: Color) -> Line<'static> {
     let text = format!("@{}", username);
-    let line = format!(
-        "{}{}{}",
-        "\u{28FF}".repeat(4),
-        text,
-        "\u{28FF}".repeat(4),
-    );
+    let line = format!("{}{}{}", "\u{28FF}".repeat(4), text, "\u{28FF}".repeat(4));
     Line::from(Span::styled(line, Style::default().fg(color)))
 }
 
@@ -167,6 +162,9 @@ pub fn make_system_msg(text: &str) -> ChatMessage {
         thumb_url: String::new(),
         width: 0,
         height: 0,
+        mp3_url: String::new(),
+        audio_note_url: String::new(),
+        audio_duration_ms: 0,
     }
 }
 
@@ -174,7 +172,7 @@ pub fn make_system_msg(text: &str) -> ChatMessage {
 pub fn format_image_message(
     msg: &ChatMessage,
     color: Color,
-    mention_color: Color,
+    mention_color: Color
 ) -> Vec<Line<'static>> {
     let timestamp = msg.timestamp.chars().take(5).collect::<String>();
     let ts_span = Span::styled(format!("[{}] ", timestamp), Style::default().fg(color));
@@ -194,10 +192,7 @@ pub fn format_image_message(
     vec![line1, line2]
 }
 
-pub fn format_image_header(
-    msg: &ChatMessage,
-    color: Color,
-) -> Vec<Line<'static>> {
+pub fn format_image_header(msg: &ChatMessage, color: Color) -> Vec<Line<'static>> {
     let timestamp = msg.timestamp.chars().take(5).collect::<String>();
     let ts_span = Span::styled(format!("[{}] ", timestamp), Style::default().fg(color));
     let user_span = Span::styled(
@@ -205,4 +200,39 @@ pub fn format_image_header(
         Style::default().fg(color).add_modifier(Modifier::BOLD)
     );
     vec![Line::from(vec![ts_span, user_span])]
+}
+
+pub fn format_audio_message(
+    msg: &ChatMessage,
+    color: Color,
+    is_playing: bool
+) -> Vec<Line<'static>> {
+    let timestamp = msg.timestamp.chars().take(5).collect::<String>();
+    let ts_span = Span::styled(format!("[{}] ", timestamp), Style::default().fg(color));
+    let user_span = Span::styled(
+        format!("{} \u{25B6}", msg.username.clone()),
+        Style::default().fg(color).add_modifier(Modifier::BOLD)
+    );
+
+    let icon = if is_playing {
+        "\u{25B6}" // ▶ = playing
+    } else {
+        "\u{23F8}" //  ⏸ = paused/stopped
+    };
+
+    let duration_str = if msg.audio_duration_ms > 0 {
+        let total_secs = msg.audio_duration_ms / 1000;
+        let mins = total_secs / 60;
+        let secs = total_secs % 60;
+        format!(" {}  {:02}:{:02}", icon, mins, secs)
+    } else {
+        format!(" {}  audio", icon)
+    };
+
+    let audio_span = Span::styled(
+        duration_str,
+        Style::default().fg(color).add_modifier(Modifier::BOLD)
+    );
+
+    vec![Line::from(vec![ts_span, user_span, audio_span])]
 }

@@ -42,6 +42,7 @@ use super::render::{
     format_system_message,
     format_user_message,
     format_image_header,
+    format_audio_message,
     make_system_msg,
     username_color,
 };
@@ -77,47 +78,87 @@ struct UploadResponse {
     height: u32,
 }
 
-async fn do_image_upload(path: &str, token: &str) -> Result<UploadResponse, String> {
-    let bytes = tokio::fs::read(path)
-        .await
-        .map_err(|e| format!("cannot read file: {}", e))?;
+#[derive(serde::Deserialize)]
+struct AudioUploadResponse {
+    url: String,
+    duration_ms: u32,
+}
 
-    let file_name = std::path::Path::new(path)
+async fn do_image_upload(path: &str, token: &str) -> Result<UploadResponse, String> {
+    let bytes = tokio::fs::read(path).await.map_err(|e| format!("cannot read file: {}", e))?;
+
+    let file_name = std::path::Path
+        ::new(path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "upload.png".to_string());
 
-    let part = reqwest::multipart::Part::bytes(bytes)
+    let part = reqwest::multipart::Part
+        ::bytes(bytes)
         .file_name(file_name)
         .mime_str("application/octet-stream")
         .map_err(|e| e.to_string())?;
 
-    let form = reqwest::multipart::Form::new()
-        .text("token", token.to_string())
-        .part("file", part);
+    let form = reqwest::multipart::Form::new().text("token", token.to_string()).part("file", part);
 
-    let upload_base = std::env::var("UPLOAD_URL")
+    let upload_base = std::env
+        ::var("UPLOAD_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8083".to_string());
 
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{}/upload?token={}", upload_base, token))
         .multipart(form)
-        .send()
-        .await
+        .send().await
         .map_err(|e| format!("upload request failed: {}", e))?;
 
     let status = resp.status();
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("failed to read response: {}", e))?;
+    let body = resp.text().await.map_err(|e| format!("failed to read response: {}", e))?;
 
     if !status.is_success() {
         return Err(format!("upload failed ({}): {}", status, body));
     }
 
-    serde_json::from_str::<UploadResponse>(&body)
+    serde_json::from_str::<UploadResponse>(&body).map_err(|e| format!("invalid response: {}", e))
+}
+
+async fn do_audio_upload(path: &str, token: &str) -> Result<AudioUploadResponse, String> {
+    let bytes = tokio::fs::read(path).await.map_err(|e| format!("cannot read file: {}", e))?;
+
+    let file_name = std::path::Path
+        ::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "upload.wav".to_string());
+
+    let part = reqwest::multipart::Part
+        ::bytes(bytes)
+        .file_name(file_name)
+        .mime_str("application/octet-stream")
+        .map_err(|e| e.to_string())?;
+
+    let form = reqwest::multipart::Form::new().text("token", token.to_string()).part("file", part);
+
+    let upload_base = std::env
+        ::var("UPLOAD_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8083".to_string());
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/upload/audio?token={}", upload_base, token))
+        .multipart(form)
+        .send().await
+        .map_err(|e| format!("upload request failed: {}", e))?;
+
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| format!("failed to read response: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!("upload failed ({}): {}", status, body));
+    }
+
+    serde_json
+        ::from_str::<AudioUploadResponse>(&body)
         .map_err(|e| format!("invalid response: {}", e))
 }
 
@@ -171,18 +212,26 @@ pub struct App {
     last_resize: Instant,
     dirty: bool,
 
+    // Audio recording
+    is_recording: bool,
+    record_start: Option<Instant>,
+
+    // Audio playback
+    playing_audio: Option<String>, // message id currently playing
 }
 
 impl App {
     /// (display command, description, text inserted into the input box
     /// when picked from the `/help` popup). Argument-taking commands insert
     /// a trailing space so the cursor lands ready to type the argument.
-    const HELP_COMMANDS: [(&'static str, &'static str, &'static str); 8] = [
+    const HELP_COMMANDS: [(&'static str, &'static str, &'static str); 10] = [
         ("/join <room>", "join a room", "/join "),
         ("/leave", "leave current room", "/leave"),
         ("/rooms", "list server rooms", "/rooms"),
         ("/dm <user> <msg>", "send a direct message", "/dm "),
         ("/image <path>", "share an image", "/image "),
+        ("/audio <path>", "send an audio file", "/audio "),
+        ("/record", "toggle audio recording", "/record"),
         ("/clear", "clear messages", "/clear"),
         ("/help", "show this help", "/help"),
         ("/quit", "quit", "/quit"),
@@ -193,7 +242,7 @@ impl App {
         token: String,
         writer: tokio::io::WriteHalf<ClientStream>,
         server_rx: mpsc::UnboundedReceiver<String>,
-        server_tx: mpsc::UnboundedSender<String>,
+        server_tx: mpsc::UnboundedSender<String>
     ) -> Self {
         let default_theme = &THEMES[0];
         let mut ta = TextArea::default();
@@ -250,7 +299,9 @@ impl App {
             image_cell_width: 16,
             last_resize: Instant::now(),
             dirty: true,
-
+            is_recording: false,
+            record_start: None,
+            playing_audio: None,
         };
         app.cube.color = default_theme.primary;
         app.matrix_rain.color = default_theme.primary;
@@ -271,8 +322,8 @@ impl App {
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-        // Everyday I am reminded of the mistake of being a windows user (* ￣︿￣)
-        self.picker = Picker::halfblocks(); // <---- I couldn't for my life get this working, so i had to use this 
+        // Everyday I am reminded why i hate windows (* ￣︿￣)
+        self.picker = Picker::halfblocks(); // <---- I couldn't for my life get this working, so i had to use this
         self.update_image_cell_size();
 
         tokio::spawn(async move {
@@ -419,8 +470,12 @@ impl App {
                         self.image_cache.insert(id, proto);
                         self.dirty = true;
                     }
-                    Err(mpsc::error::TryRecvError::Empty) => break,
-                    Err(mpsc::error::TryRecvError::Disconnected) => break,
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        break;
+                    }
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        break;
+                    }
                 }
             }
             if self.should_quit {
@@ -589,6 +644,9 @@ impl App {
                     }
                     KeyCode::Down => {
                         self.scroll_down();
+                    }
+                    KeyCode::Enter | KeyCode::Char('p') => {
+                        self.toggle_play_audio_in_room();
                     }
                     _ => {}
                 }
@@ -783,7 +841,10 @@ impl App {
                                 Ok(resp) => {
                                     let wire = format!(
                                         "/image {} {} {} {}\n",
-                                        resp.url, resp.thumb_url, resp.width, resp.height
+                                        resp.url,
+                                        resp.thumb_url,
+                                        resp.width,
+                                        resp.height
                                     );
                                     let _ = writer.lock().await.write_all(wire.as_bytes()).await;
                                 }
@@ -792,6 +853,148 @@ impl App {
                                 }
                             }
                         });
+                    }
+                }
+                "/audio" => {
+                    let path = parts.get(1).copied().unwrap_or("").trim();
+                    if path.is_empty() {
+                        self.ingest_msg(make_system_msg("Usage: /audio <file_path>"), true);
+                    } else {
+                        let path = path.to_string();
+                        let token = self.token.clone();
+                        let writer = self.writer.clone();
+                        let err_tx = self.server_tx.clone();
+                        self.ingest_msg(make_system_msg("Uploading audio..."), true);
+                        tokio::spawn(async move {
+                            match do_audio_upload(&path, &token).await {
+                                Ok(resp) => {
+                                    let wire = format!(
+                                        "/audio {} {}\n",
+                                        resp.url,
+                                        resp.duration_ms
+                                    );
+                                    let _ = writer.lock().await.write_all(wire.as_bytes()).await;
+                                }
+                                Err(e) => {
+                                    let _ = err_tx.send(format!("Audio upload failed: {}", e));
+                                }
+                            }
+                        });
+                    }
+                }
+                "/record" => {
+                    if self.is_recording {
+                        // Stop recording
+                        self.is_recording = false;
+                        let elapsed = self.record_start
+                            .map(|s| s.elapsed().as_millis() as u32)
+                            .unwrap_or(0);
+                        self.record_start = None;
+                        self.ingest_msg(
+                            make_system_msg(
+                                &format!(
+                                    "Recording stopped ({:.1}s). Encoding and uploading...",
+                                    (elapsed as f64) / 1000.0
+                                )
+                            ),
+                            true
+                        );
+
+                        let token = self.token.clone();
+                        let writer = self.writer.clone();
+                        let err_tx = self.server_tx.clone();
+                        let duration_ms = elapsed;
+
+                        tokio::task::spawn_blocking(move || {
+                            use rodio::Source;
+                            use rodio::microphone::MicrophoneBuilder;
+
+                            let result = (|| -> Result<(), String> {
+                                let mic = MicrophoneBuilder::new()
+                                    .default_device()
+                                    .map_err(|e| format!("No input device: {}", e))?
+                                    .default_config()
+                                    .map_err(|e| format!("Mic config error: {}", e))?
+                                    .open_stream()
+                                    .map_err(|e| format!("Mic open error: {}", e))?;
+
+                                let sample_rate = mic.sample_rate();
+                                let channels = mic.channels();
+
+                                let recording = mic
+                                    .take_duration(
+                                        std::time::Duration::from_millis(duration_ms as u64)
+                                    )
+                                    .record();
+
+                                let mut samples: Vec<f32> = Vec::new();
+                                for s in recording {
+                                    samples.push(s);
+                                }
+
+                                if samples.is_empty() {
+                                    return Err("No audio captured".to_string());
+                                }
+
+                                // Write WAV to temp file
+                                let wav_path = std::env::temp_dir().join("retro_audio_record.wav");
+                                let spec = hound::WavSpec {
+                                    channels: channels.get(),
+                                    sample_rate: sample_rate.get(),
+                                    bits_per_sample: 16,
+                                    sample_format: hound::SampleFormat::Int,
+                                };
+                                let mut wav_writer = hound::WavWriter
+                                    ::create(&wav_path, spec)
+                                    .map_err(|e| format!("WAV create error: {}", e))?;
+                                for &s in &samples {
+                                    let sample_i16 = (s.clamp(-1.0, 1.0) *
+                                        (i16::MAX as f32)) as i16;
+                                    wav_writer
+                                        .write_sample(sample_i16)
+                                        .map_err(|e| format!("WAV write error: {}", e))?;
+                                }
+                                wav_writer
+                                    .finalize()
+                                    .map_err(|e| format!("WAV finalize error: {}", e))?;
+
+                                // Upload via async runtime
+                                let rt = tokio::runtime::Handle::current();
+                                rt.block_on(async move {
+                                    let path_str = wav_path.to_string_lossy().to_string();
+                                    match do_audio_upload(&path_str, &token).await {
+                                        Ok(resp) => {
+                                            let wire = format!(
+                                                "/audio {} {}\n",
+                                                resp.url,
+                                                resp.duration_ms
+                                            );
+                                            let _ = writer
+                                                .lock().await
+                                                .write_all(wire.as_bytes()).await;
+                                        }
+                                        Err(e) => {
+                                            let _ = err_tx.send(
+                                                format!("Audio upload failed: {}", e)
+                                            );
+                                        }
+                                    }
+                                });
+                                Ok(())
+                            })();
+
+                            if let Err(e) = result {
+                                let _ = err_tx.send(e);
+                            }
+                        });
+                    } else {
+                        // Start recording
+                        self.is_recording = true;
+                        self.record_start = Some(Instant::now());
+                        self.ingest_msg(
+                            make_system_msg("Recording audio... (type /record again to stop)"),
+                            true
+                        );
                     }
                 }
                 "/clear" => {
@@ -968,6 +1171,18 @@ impl App {
                         self.clear_room_read_state(&room);
                     }
                 }
+                MessageType::AudioMessage => {
+                    let is_current_room = msg.room.is_empty() || msg.room == self.current_room;
+                    let room = msg.room.clone();
+                    let is_history = msg.is_history;
+                    if is_history && msg.username == self.username && !msg.id.is_empty() {
+                        self.read_message_ids.insert(msg.id.clone());
+                    }
+                    self.ingest_msg(msg, is_current_room || is_history);
+                    if is_current_room && !is_history {
+                        self.clear_room_read_state(&room);
+                    }
+                }
                 MessageType::TypingNotification => {
                     if msg.username != self.username {
                         let room = if msg.room.is_empty() {
@@ -1047,8 +1262,8 @@ impl App {
     fn update_image_cell_size(&mut self) {
         let (fw, fh) = self.picker.font_size();
         let thumb_px = 128u32;
-        self.image_cell_height = ((thumb_px / fh as u32).max(1)) as u16;
-        self.image_cell_width = ((thumb_px / fw as u32).max(1)) as u16;
+        self.image_cell_height = (thumb_px / (fh as u32)).max(1) as u16;
+        self.image_cell_width = (thumb_px / (fw as u32)).max(1) as u16;
     }
 
     fn message_line_height(&self, msg: &ChatMessage, content_width: u16) -> u16 {
@@ -1057,6 +1272,7 @@ impl App {
                 let header_lines = 1u16;
                 header_lines + self.image_cell_height
             }
+            MessageType::AudioMessage => 1,
             MessageType::SystemNotification => {
                 if msg.content.is_empty() { 1 } else { msg.content.lines().count() as u16 }
             }
@@ -1086,7 +1302,9 @@ impl App {
                         } else {
                             total += 1;
                             let remaining = line_chars - first_wrap;
-                            total += (remaining as u16 + wrap_width as u16 - 1) / wrap_width as u16;
+                            total +=
+                                ((remaining as u16) + (wrap_width as u16) - 1) /
+                                (wrap_width as u16);
                         }
                     }
                 }
@@ -1118,29 +1336,99 @@ impl App {
     fn spawn_image_fetch(&self, msg_id: String, thumb_url: String) {
         let tx = self.image_results_tx.clone();
         let picker = self.picker.clone();
-        let upload_base = std::env::var("UPLOAD_URL")
+        let upload_base = std::env
+            ::var("UPLOAD_URL")
             .unwrap_or_else(|_| "http://127.0.0.1:8083".to_string());
         let url = format!("{}{}", upload_base, thumb_url);
         let cell_w = self.image_cell_width;
         let cell_h = self.image_cell_height;
 
         tokio::spawn(async move {
-            let Ok(resp) = reqwest::get(&url).await else { return };
-            let Ok(bytes) = resp.bytes().await else { return };
+            let Ok(resp) = reqwest::get(&url).await else {
+                return;
+            };
+            let Ok(bytes) = resp.bytes().await else {
+                return;
+            };
 
-            let proto = tokio::task::spawn_blocking(move || {
-                let img = image::load_from_memory(&bytes).ok()?;
-                let rect = ratatui::layout::Rect::new(0, 0, cell_w, cell_h);
-                picker.new_protocol(img, rect, Resize::Fit(None)).ok()
-            })
-            .await
-            .ok()
-            .flatten();
+            let proto = tokio::task
+                ::spawn_blocking(move || {
+                    let img = image::load_from_memory(&bytes).ok()?;
+                    let rect = ratatui::layout::Rect::new(0, 0, cell_w, cell_h);
+                    picker.new_protocol(img, rect, Resize::Fit(None)).ok()
+                }).await
+                .ok()
+                .flatten();
 
             if let Some(proto) = proto {
                 let _ = tx.send((msg_id, proto));
             }
         });
+    }
+
+    fn toggle_play_audio_in_room(&mut self) {
+        if let Some(ref playing_id) = self.playing_audio.clone() {
+            self.playing_audio = None;
+            self.ingest_msg(make_system_msg("Stopped playback."), true);
+            return;
+        }
+
+        // Find the most recent AudioMessage in the current room
+        let audio_msg = self
+            .messages_for_room(&self.current_room)
+            .rev()
+            .find(
+                |(msg, _)|
+                    msg.message_type == MessageType::AudioMessage && !msg.audio_url.is_empty()
+            )
+            .map(|(msg, _)| msg.clone());
+
+        if let Some(msg) = audio_msg {
+            let msg_id = msg.id.clone();
+            let audio_url = msg.audio_url.clone();
+            let upload_base = std::env
+                ::var("UPLOAD_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8083".to_string());
+            let full_url = format!("{}{}", upload_base, audio_url);
+            let err_tx = self.server_tx.clone();
+            let playing_id = msg_id.clone();
+
+            self.playing_audio = Some(playing_id);
+            self.ingest_msg(make_system_msg("Playing audio..."), true);
+
+            tokio::spawn(async move {
+                match reqwest::get(&full_url).await {
+                    Ok(resp) => {
+                        match resp.bytes().await {
+                            Ok(bytes) => {
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    let cursor = std::io::Cursor::new(bytes.to_vec());
+                                    match rodio::Decoder::new(cursor) {
+                                        Ok(decoder) => {
+                                            let (_stream, handle) = rodio::OutputStream
+                                                ::try_default()
+                                                .unwrap();
+                                            let sink = rodio::Sink::try_new(&handle).unwrap();
+                                            sink.append(decoder);
+                                            sink.sleep_until_end();
+                                        }
+                                        Err(e) => {
+                                            let _ = err_tx.send(format!("Decode error: {}", e));
+                                        }
+                                    }
+                                }).await;
+                            }
+                            Err(e) => {
+                                let _ = err_tx.send(format!("Audio download error: {}", e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = err_tx.send(format!("Audio fetch error: {}", e));
+                    }
+                }
+            });
+        }
     }
 
     fn render_title_bar(&self, f: &mut Frame, area: Rect) {
@@ -1299,12 +1587,12 @@ impl App {
                             self.theme.secondary
                         };
                         let header_lines = format_image_header(msg, color);
-                        let header_area = Rect { height: 1.min(msg_area.height), ..msg_area };
+                        let header_area = Rect { height: (1).min(msg_area.height), ..msg_area };
                         let header_para = Paragraph::new(header_lines);
                         f.render_widget(header_para, header_area);
 
                         let img_area = Rect {
-                            y: msg_area.y + 1.min(msg_area.height),
+                            y: msg_area.y + (1).min(msg_area.height),
                             height: msg_area.height.saturating_sub(1),
                             ..msg_area
                         };
@@ -1327,6 +1615,17 @@ impl App {
                             );
                             f.render_widget(placeholder, img_area);
                         }
+                    }
+                    MessageType::AudioMessage => {
+                        let color = if msg.username == self.username {
+                            self.theme.primary
+                        } else {
+                            self.theme.secondary
+                        };
+                        let is_playing = self.playing_audio.as_deref() == Some(&msg.id);
+                        let lines = format_audio_message(msg, color, is_playing);
+                        let para = Paragraph::new(lines);
+                        f.render_widget(para, msg_area);
                     }
                     _ => {}
                 }
@@ -1417,7 +1716,7 @@ impl App {
         let typing_text = {
             let names: Vec<&str> = self.typing_users
                 .iter()
-                .filter(|(_, (r, _))| r == &self.current_room || r.starts_with("__dm__"))
+                .filter(|(_, (r, _))| (r == &self.current_room || r.starts_with("__dm__")))
                 .map(|(u, _)| u.as_str())
                 .collect();
             if names.is_empty() {
@@ -1436,14 +1735,34 @@ impl App {
                 format!(" Several people are typing... ")
             }
         };
-        let label = if !typing_text.is_empty() {
+        let label = if self.is_recording {
+            let elapsed = self.record_start.map(|s| s.elapsed().as_secs()).unwrap_or(0);
+            let dots = match (self.pulse_tick / 8) % 4 {
+                0 => ".",
+                1 => "..",
+                2 => "...",
+                _ => "",
+            };
+            format!(
+                " \u{25CF} REC{}  {:02}:{:02}  (type /record to stop)",
+                dots,
+                elapsed / 60,
+                elapsed % 60
+            )
+        } else if !typing_text.is_empty() {
             typing_text
         } else if !unread_str.is_empty() {
             format!(" \u{2191}\u{2193}\u{21b5}:switch  Tab:focus {}", unread_str)
         } else {
             " \u{2191}\u{2193}\u{21b5}:switch  Tab:focus  /help:commands".to_string()
         };
-        let status = Paragraph::new(label).style(Style::default().fg(Color::DarkGray));
+        let status = if self.is_recording {
+            Paragraph::new(label).style(
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+            )
+        } else {
+            Paragraph::new(label).style(Style::default().fg(Color::DarkGray))
+        };
         f.render_widget(status, area);
         if area.width >= 42 {
             f.render_widget(spark, spark_area);
