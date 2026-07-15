@@ -28,7 +28,7 @@ prop_compose! {
         timestamp in "[0-9]{2}:[0-9]{2}:[0-9]{2}",
         message_type in arb_message_type(),
     ) -> ChatMessage {
-        ChatMessage { id: String::new(), username, content, timestamp, message_type, room: String::new(), is_history: false, image_url: String::new(), thumb_url: String::new(), width: 0, height: 0 }
+        ChatMessage { username, content, timestamp, message_type, ..Default::default() }
     }
 }
 
@@ -52,17 +52,12 @@ proptest! {
         let mut state = UiAppState::new();
         for _ in 0..msg_count {
             state.messages.push(ChatMessage {
-                id: String::new(),
                 username: "u".into(),
                 content: "c".into(),
                 timestamp: "00:00:00".into(),
                 message_type: MessageType::UserMessage,
                 room: "general".into(),
-                is_history: false,
-                image_url: String::new(),
-                thumb_url: String::new(),
-                width: 0,
-                height: 0,
+                ..Default::default()
             });
         }
         state.scroll_offset = initial_offset.min(state.messages.len().saturating_sub(visible_height) as u16);
@@ -187,17 +182,11 @@ proptest! {
 #[test]
 fn test_mention_highlighting() {
     let msg = ChatMessage {
-        id: String::new(),
         username: "alice".into(),
         content: "hi @bob how are you".into(),
         timestamp: "12:34:56".into(),
         message_type: MessageType::UserMessage,
-        room: String::new(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
+        ..Default::default()
     };
     let lines = format_user_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan, None);
     let rendered: String = lines
@@ -272,17 +261,16 @@ proptest! {
 #[test]
 fn test_image_message_with_dimensions() {
     let msg = ChatMessage {
-        id: String::new(),
         username: "jet".into(),
         content: String::new(),
         timestamp: "15:51:30".into(),
         message_type: MessageType::ImageMessage,
         room: "general".into(),
-        is_history: false,
         image_url: "/attachments/1".into(),
         thumb_url: "/attachments/1/thumb".into(),
         width: 800,
         height: 600,
+        ..Default::default()
     };
     let lines = format_image_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan);
     assert_eq!(lines.len(), 2);
@@ -298,17 +286,12 @@ fn test_image_message_with_dimensions() {
 #[test]
 fn test_image_message_no_dimensions() {
     let msg = ChatMessage {
-        id: String::new(),
         username: "alice".into(),
         content: String::new(),
         timestamp: "09:15:00".into(),
         message_type: MessageType::ImageMessage,
         room: "general".into(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
+        ..Default::default()
     };
     let lines = format_image_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan);
     assert_eq!(lines.len(), 2);

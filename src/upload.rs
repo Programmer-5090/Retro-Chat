@@ -77,6 +77,7 @@ fn is_audio_mime(mime: &str) -> bool {
 
 fn audio_duration_ms(bytes: &[u8]) -> u32 {
     use std::io::Cursor;
+    use rodio::Source;
     let cursor = Cursor::new(bytes.to_vec());
     match rodio::Decoder::new(cursor) {
         Ok(decoder) => {

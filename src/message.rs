@@ -3,7 +3,7 @@ use chrono::Local;
 use derive_more::Display;
 use rand::Rng;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, Serialize, Deserialize, Display, Default)]
 #[display("{username}: {content}")]
 pub struct ChatMessage {
     #[serde(default)]
@@ -32,8 +32,9 @@ pub struct ChatMessage {
     pub audio_duration_ms: u32, 
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Display)]
+#[derive(Debug, Clone, Serialize, Deserialize, Display, Default, PartialEq)]
 pub enum MessageType {
+    #[default]
     UserMessage,
     SystemNotification,
     ImageMessage,
@@ -48,8 +49,8 @@ pub enum MessageType {
 /// Generates a short random id to tag a chat message with, so read
 /// receipts can reference it later.
 pub fn generate_message_id() -> String {
-    rand::thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
+    rand::rng()
+        .sample_iter(&rand::distr::Alphanumeric)
         .take(12)
         .map(char::from)
         .collect()
@@ -57,20 +58,11 @@ pub fn generate_message_id() -> String {
 
 fn build_msg(text: &str, room: &str) -> String {
     let msg = ChatMessage {
-        id: String::new(),
-        username: "Server".to_string(),
         content: text.to_string(),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::SystemNotification,
         room: room.to_string(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
-        mp3_url: String::new(),
-        audio_note_url: String::new(),
-        audio_duration_ms: 0,
+        ..Default::default()
     };
     let json = serde_json::to_string(&msg).unwrap();
     format!("{}\n", json)
@@ -103,20 +95,12 @@ pub fn dm_display_name<'a>(room: &'a str, username: &str) -> &'a str {
 
 pub fn build_read_receipt(reader: &str, room: &str, ids: &[String]) -> String {
     let msg = ChatMessage {
-        id: String::new(),
         username: reader.to_string(),
         content: ids.join(","),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::ReadReceipt,
         room: room.to_string(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
-        mp3_url: String::new(),
-        audio_note_url: String::new(),
-        audio_duration_ms: 0,
+        ..Default::default()
     };
     serde_json::to_string(&msg).unwrap()
 }

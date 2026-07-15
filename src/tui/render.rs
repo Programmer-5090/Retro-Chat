@@ -151,20 +151,11 @@ pub fn format_system_message(msg: &ChatMessage, color: Color) -> Vec<Line<'stati
 
 pub fn make_system_msg(text: &str) -> ChatMessage {
     ChatMessage {
-        id: String::new(),
         username: "system".to_string(),
         content: text.to_string(),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::SystemNotification,
-        room: String::new(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
-        mp3_url: String::new(),
-        audio_note_url: String::new(),
-        audio_duration_ms: 0,
+        ..Default::default()
     }
 }
 

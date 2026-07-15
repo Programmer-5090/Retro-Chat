@@ -909,6 +909,7 @@ impl App {
                             use rodio::Source;
                             use rodio::microphone::MicrophoneBuilder;
 
+                            let err_tx_inner = err_tx.clone();
                             let result = (|| -> Result<(), String> {
                                 let mic = MicrophoneBuilder::new()
                                     .default_device()
@@ -974,7 +975,7 @@ impl App {
                                                 .write_all(wire.as_bytes()).await;
                                         }
                                         Err(e) => {
-                                            let _ = err_tx.send(
+                                            let _ = err_tx_inner.send(
                                                 format!("Audio upload failed: {}", e)
                                             );
                                         }
@@ -1376,16 +1377,18 @@ impl App {
         // Find the most recent AudioMessage in the current room
         let audio_msg = self
             .messages_for_room(&self.current_room)
+            .collect::<Vec<_>>()
+            .into_iter()
             .rev()
             .find(
                 |(msg, _)|
-                    msg.message_type == MessageType::AudioMessage && !msg.audio_url.is_empty()
+                    msg.message_type == MessageType::AudioMessage && !msg.audio_note_url.is_empty()
             )
             .map(|(msg, _)| msg.clone());
 
         if let Some(msg) = audio_msg {
             let msg_id = msg.id.clone();
-            let audio_url = msg.audio_url.clone();
+            let audio_url = msg.audio_note_url.clone();
             let upload_base = std::env
                 ::var("UPLOAD_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:8083".to_string());
@@ -1405,12 +1408,12 @@ impl App {
                                     let cursor = std::io::Cursor::new(bytes.to_vec());
                                     match rodio::Decoder::new(cursor) {
                                         Ok(decoder) => {
-                                            let (_stream, handle) = rodio::OutputStream
-                                                ::try_default()
+                                            let handle = rodio::DeviceSinkBuilder
+                                                ::open_default_sink()
                                                 .unwrap();
-                                            let sink = rodio::Sink::try_new(&handle).unwrap();
-                                            sink.append(decoder);
-                                            sink.sleep_until_end();
+                                            let player = rodio::Player::connect_new(&handle.mixer());
+                                            player.append(decoder);
+                                            player.sleep_until_end();
                                         }
                                         Err(e) => {
                                             let _ = err_tx.send(format!("Decode error: {}", e));

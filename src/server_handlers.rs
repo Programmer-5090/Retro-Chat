@@ -9,7 +9,7 @@ use tokio::{
 use chrono::Local;
 use redis::Commands;
 use argon2::{
-    password_hash::{ SaltString, PasswordHash, PasswordHasher, PasswordVerifier },
+    password_hash::{ SaltString, PasswordHash, PasswordHasher, PasswordVerifier, rand_core },
     Argon2,
 };
 use rand::Rng;
@@ -70,7 +70,7 @@ async fn authenticate_user(
                     .fetch_one(&state.pool).await
                     .unwrap_or(0) == 0;
             let role = if is_first { "admin" } else { "user" };
-            let salt = SaltString::generate(&mut rand::rngs::OsRng);
+            let salt = SaltString::generate(&mut rand_core::OsRng);
             let hash = Argon2::default()
                 .hash_password(password.as_bytes(), &salt)
                 .unwrap()
@@ -85,8 +85,8 @@ async fn authenticate_user(
             {
                 Ok(_) => {
                     let token: String = rand
-                        ::thread_rng()
-                        .sample_iter(&rand::distributions::Alphanumeric)
+                        ::rng()
+                        .sample_iter(&rand::distr::Alphanumeric)
                         .take(32)
                         .map(char::from)
                         .collect();
@@ -129,8 +129,8 @@ async fn authenticate_user(
                     if Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok() {
                         let _: Result<(), _> = redis_conn.del(&attempts_key);
                         let token: String = rand
-                            ::thread_rng()
-                            .sample_iter(&rand::distributions::Alphanumeric)
+                            ::rng()
+                            .sample_iter(&rand::distr::Alphanumeric)
                             .take(32)
                             .map(char::from)
                             .collect();
@@ -180,11 +180,7 @@ async fn send_room_list(state: &AppState, username: &str, out_tx: &mpsc::Unbound
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::RoomList,
         room: String::new(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
+        ..Default::default()
     };
     let json = serde_json::to_string(&msg).unwrap();
     let _ = out_tx.send(json);
@@ -212,11 +208,7 @@ async fn handle_leave_command(
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::SystemNotification,
         room: current_room.clone(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
+        ..Default::default()
     };
     let leave_json = serde_json::to_string(&leave_notice).unwrap();
     state.send_to_room(&current_room, &leave_json).await;
@@ -240,8 +232,8 @@ async fn handle_switch_command(state: &AppState, username: &str, input: &str) {
 async fn replay_history(state: &AppState, room_name: &str, out_tx: &mpsc::UnboundedSender<String>) {
     let room_id: i32 = state.get_or_create_db_room(room_name, "system").await;
     let rows = sqlx
-        ::query_as::<_, (String, String, chrono::DateTime<chrono::Utc>, String, Option<String>, Option<String>, Option<i32>, Option<i32>)>(
-            "SELECT username, content, created_at, message_type, image_url, thumb_url, width, height FROM messages WHERE room_id = $1 ORDER BY created_at DESC LIMIT 50"
+        ::query_as::<_, (String, String, chrono::DateTime<chrono::Utc>, String, Option<String>, Option<String>, Option<i32>, Option<i32>, Option<String>, Option<i32>)>(
+            "SELECT username, content, created_at, message_type, image_url, thumb_url, width, height, audio_url, audio_duration_ms FROM messages WHERE room_id = $1 ORDER BY created_at DESC LIMIT 50"
         )
         .bind(room_id)
         .fetch_all(&state.pool).await
@@ -256,6 +248,7 @@ async fn replay_history(state: &AppState, room_name: &str, out_tx: &mpsc::Unboun
             message_type: match row.3.as_str() {
                 "UserMessage" => MessageType::UserMessage,
                 "ImageMessage" => MessageType::ImageMessage,
+                "AudioMessage" => MessageType::AudioMessage,
                 _ => MessageType::SystemNotification,
             },
             room: room_name.to_string(),
@@ -264,6 +257,9 @@ async fn replay_history(state: &AppState, room_name: &str, out_tx: &mpsc::Unboun
             thumb_url: row.5.unwrap_or_default(),
             width: row.6.unwrap_or(0) as u32,
             height: row.7.unwrap_or(0) as u32,
+            mp3_url: String::new(),
+            audio_note_url: row.8.unwrap_or_default(),
+            audio_duration_ms: row.9.unwrap_or(0) as u32,
         };
         let msg_json = serde_json::to_string(&msg).unwrap();
         let _ = out_tx.send(msg_json);
@@ -310,11 +306,7 @@ async fn handle_join_command(
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             message_type: MessageType::SystemNotification,
             room: room_name.to_string(),
-            is_history: false,
-            image_url: String::new(),
-            thumb_url: String::new(),
-            width: 0,
-            height: 0,
+            ..Default::default()
         };
         let join_json = serde_json::to_string(&join_notice).unwrap();
         state.send_to_room(room_name, &join_json).await;
@@ -376,11 +368,7 @@ async fn handle_msg_command(
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::UserMessage,
         room: dm_room.clone(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
+        ..Default::default()
     };
     let dm_json = serde_json::to_string(&dm_msg).unwrap();
 
@@ -550,11 +538,7 @@ async fn handle_regular_message(
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::UserMessage,
         room: user_room.clone(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
+        ..Default::default()
     };
     let json = serde_json::to_string(&msg).unwrap();
 
@@ -570,11 +554,7 @@ async fn handle_regular_message(
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             message_type: MessageType::SystemNotification,
             room: String::new(),
-            is_history: false,
-            image_url: String::new(),
-            thumb_url: String::new(),
-            width: 0,
-            height: 0,
+            ..Default::default()
         };
         let warn_json = serde_json::to_string(&warn).unwrap();
         let _ = writer.write_all(warn_json.as_bytes()).await;
@@ -638,11 +618,7 @@ async fn cleanup_disconnect(state: &AppState, redis_conn: &mut redis::Connection
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             message_type: MessageType::SystemNotification,
             room: room.clone(),
-            is_history: false,
-            image_url: String::new(),
-            thumb_url: String::new(),
-            width: 0,
-            height: 0,
+            ..Default::default()
         };
         let leave_json = serde_json::to_string(&leave_msg).unwrap();
         state.send_to_room(room, &leave_json).await;
@@ -735,11 +711,7 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::SetActiveRoom,
         room: String::new(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
+        ..Default::default()
     };
     let active_json = serde_json::to_string(&active_msg).unwrap();
     let _ = out_tx.send(active_json);
@@ -751,11 +723,7 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::SystemNotification,
         room: current_room.clone(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
+        ..Default::default()
     };
     let join_json = serde_json::to_string(&join_msg).unwrap();
     state.send_to_room(&current_room, &join_json).await;
@@ -773,11 +741,7 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::PresenceSync,
         room: current_room.clone(),
-        is_history: false,
-        image_url: String::new(),
-        thumb_url: String::new(),
-        width: 0,
-        height: 0,
+        ..Default::default()
     };
     let sync_json = serde_json::to_string(&sync_msg).unwrap();
     let _ = out_tx.send(sync_json);
@@ -798,11 +762,7 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                     timestamp: Local::now().format("%H:%M:%S").to_string(),
                     message_type: MessageType::TypingNotification,
                     room: current_room.clone(),
-                    is_history: false,
-                    image_url: String::new(),
-                    thumb_url: String::new(),
-                    width: 0,
-                    height: 0,
+                    ..Default::default()
                 };
                 let t_json = serde_json::to_string(&t_msg).unwrap();
                 let _ = out_tx.send(t_json);
@@ -876,11 +836,7 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                             timestamp: Local::now().format("%H:%M:%S").to_string(),
                             message_type: MessageType::TypingNotification,
                             room: room.clone(),
-                            is_history: false,
-                            image_url: String::new(),
-                            thumb_url: String::new(),
-                            width: 0,
-                            height: 0,
+                            ..Default::default()
                         };
                         let typing_json = serde_json::to_string(&typing_msg).unwrap();
                         state.send_to_room(&room, &typing_json).await;
@@ -898,11 +854,11 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                                 timestamp: Local::now().format("%H:%M:%S").to_string(),
                                 message_type: MessageType::ImageMessage,
                                 room: current_room.clone(),
-                                is_history: false,
                                 image_url,
                                 thumb_url,
                                 width,
                                 height,
+                                ..Default::default()
                             };
                             let image_json = serde_json::to_string(&image_msg).unwrap();
                             let room_id = state.get_or_create_db_room(&current_room, &username).await;
@@ -922,10 +878,47 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                         } else {
                             send_notice(&mut writer, "Usage: /image <url> <thumb_url> [width] [height]").await;
                         }
+                    } else if let Some(args) = input.strip_prefix("/audio ") {
+                        let parts: Vec<&str> = args.splitn(2, ' ').collect();
+                        if parts.len() >= 2 {
+                            let audio_url = parts[0].to_string();
+                            let duration_ms: u32 = parts[1].trim().parse().unwrap_or(0);
+                            let audio_msg = ChatMessage {
+                                id: generate_message_id(),
+                                username: username.clone(),
+                                content: String::new(),
+                                timestamp: Local::now().format("%H:%M:%S").to_string(),
+                                message_type: MessageType::AudioMessage,
+                                room: current_room.clone(),
+                                is_history: false,
+                                image_url: String::new(),
+                                thumb_url: String::new(),
+                                width: 0,
+                                height: 0,
+                                mp3_url: String::new(),
+                                audio_note_url: audio_url.clone(),
+                                audio_duration_ms: duration_ms,
+                            };
+                            let audio_json = serde_json::to_string(&audio_msg).unwrap();
+                            let room_id = state.get_or_create_db_room(&current_room, &username).await;
+                            sqlx::query(
+                                "INSERT INTO messages (room_id, username, content, message_type, audio_url, audio_duration_ms) VALUES ($1, $2, $3, $4, $5, $6)"
+                            )
+                            .bind(room_id)
+                            .bind(&username)
+                            .bind(&audio_msg.content)
+                            .bind("AudioMessage")
+                            .bind(&audio_url)
+                            .bind(duration_ms as i32)
+                            .execute(&state.pool).await.ok();
+                            state.send_to_room(&current_room, &audio_json).await;
+                        } else {
+                            send_notice(&mut writer, "Usage: /audio <url> <duration_ms>").await;
+                        }
                     } else if let Some(args) = input.strip_prefix("/switch ") {
                         handle_switch_command(&state, &username, args).await;
                     } else if input == "/help" {
-                        send_notice(&mut writer, "Commands: /join <room>, /rooms, /msg <user> <text>, /image <url> <thumb_url>, /help | Admin: /mute, /unmute, /ban, /unban").await;
+                        send_notice(&mut writer, "Commands: /join <room>, /rooms, /msg <user> <text>, /image <url> <thumb_url>, /audio <url> <duration_ms>, /help | Admin: /mute, /unmute, /ban, /unban").await;
                     } else {
                         send_notice(&mut writer, "Unknown command. Try /help.").await;
                     }
