@@ -24,6 +24,12 @@ pub struct ChatMessage {
     pub width: u32,
     #[serde(default)]
     pub height: u32,
+    #[serde(default)]
+    pub mp3_url: String,
+    #[serde(default)]
+    pub audio_note_url: String,
+    #[serde(default)]
+    pub audio_duration_ms: u32, 
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Display)]
@@ -31,6 +37,7 @@ pub enum MessageType {
     UserMessage,
     SystemNotification,
     ImageMessage,
+    AudioMessage,
     RoomList,
     ReadReceipt,
     PresenceSync,
@@ -61,6 +68,9 @@ fn build_msg(text: &str, room: &str) -> String {
         thumb_url: String::new(),
         width: 0,
         height: 0,
+        mp3_url: String::new(),
+        audio_note_url: String::new(),
+        audio_duration_ms: 0,
     };
     let json = serde_json::to_string(&msg).unwrap();
     format!("{}\n", json)
@@ -104,6 +114,9 @@ pub fn build_read_receipt(reader: &str, room: &str, ids: &[String]) -> String {
         thumb_url: String::new(),
         width: 0,
         height: 0,
+        mp3_url: String::new(),
+        audio_note_url: String::new(),
+        audio_duration_ms: 0,
     };
     serde_json::to_string(&msg).unwrap()
 }

@@ -306,7 +306,7 @@ impl App {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut last_sparkline_tick = Instant::now();
         let mut last_anim_tick = Instant::now();
-        let anim_interval = Duration::from_millis(100);
+        let anim_interval = Duration::from_millis(16);
         loop {
             let now = Instant::now();
             let anim_tick = now.duration_since(last_anim_tick) >= anim_interval;
@@ -366,7 +366,7 @@ impl App {
                 self.dirty = true;
             }
 
-            if event::poll(Duration::from_millis(32))? {
+            if event::poll(Duration::from_millis(16))? {
                 match event::read()? {
                     Event::Key(key) => {
                         if key.kind == KeyEventKind::Press {

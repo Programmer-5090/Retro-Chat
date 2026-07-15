@@ -30,6 +30,12 @@ pub struct UploadResponse {
     pub height: u32,
 }
 
+#[derive(Serialize)]
+pub struct AudioUploadResponse {
+    pub url: String,
+    pub duration_ms: u32,
+}
+
 fn uploads_dir() -> PathBuf {
     PathBuf::from("uploads")
 }
@@ -50,6 +56,34 @@ fn mime_to_ext(mime: &str) -> &'static str {
         "image/gif" => "gif",
         "image/webp" => "webp",
         _ => "bin",
+    }
+}
+
+fn audio_mime_to_ext(mime: &str) -> &'static str {
+    match mime {
+        "audio/wav" | "audio/x-wav" => "wav",
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/ogg" => "ogg",
+        "audio/flac" => "flac",
+        "audio/aac" => "aac",
+        "audio/mp4" | "audio/m4a" => "m4a",
+        _ => "bin",
+    }
+}
+
+fn is_audio_mime(mime: &str) -> bool {
+    mime.starts_with("audio/")
+}
+
+fn audio_duration_ms(bytes: &[u8]) -> u32 {
+    use std::io::Cursor;
+    let cursor = Cursor::new(bytes.to_vec());
+    match rodio::Decoder::new(cursor) {
+        Ok(decoder) => {
+            let total_frames = decoder.total_duration().map(|d| d.as_millis() as u32);
+            total_frames.unwrap_or(0)
+        }
+        Err(_) => 0,
     }
 }
 
@@ -164,6 +198,99 @@ async fn handle_upload(
     }))
 }
 
+async fn handle_audio_upload(
+    State(state): State<UploadState>,
+    Query(params): Query<HashMap<String, String>>,
+    mut multipart: Multipart,
+) -> Result<Json<AudioUploadResponse>, (StatusCode, String)> {
+    let token = params
+        .get("token")
+        .ok_or((StatusCode::UNAUTHORIZED, "missing token".to_string()))?;
+    let _username = verify_token(&state.redis_client, token)
+        .await
+        .ok_or((StatusCode::UNAUTHORIZED, "invalid token".to_string()))?;
+
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut original_name: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
+        let name = field.name().unwrap_or_default().to_string();
+        if name == "file" {
+            original_name = field.file_name().map(|s| s.to_string());
+            let data = field
+                .bytes()
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+            if data.len() > 50 * 1024 * 1024 {
+                return Err((
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "file exceeds 50 MB limit".to_string(),
+                ));
+            }
+            file_bytes = Some(data.to_vec());
+        }
+    }
+
+    let bytes = file_bytes
+        .ok_or((StatusCode::BAD_REQUEST, "no file field in multipart".to_string()))?;
+
+    let kind = infer::get(&bytes)
+        .ok_or((StatusCode::BAD_REQUEST, "could not determine file type".to_string()))?;
+    let mime = kind.mime_type();
+    
+    if !is_audio_mime(mime) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("only audio files are accepted, got: {}", kind.mime_type()),
+        ));
+    }
+
+    
+    let ext = audio_mime_to_ext(mime);
+    let id = uuid::Uuid::new_v4().to_string();
+    let filename = format!("{}.{}", id, ext);
+
+    let dir = uploads_dir();
+    fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let file_path = dir.join(&filename);
+    fs::write(&file_path, &bytes)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let duration_ms = audio_duration_ms(&bytes);
+
+    let orig = original_name.unwrap_or_else(|| "upload".to_string());
+
+    let row = sqlx::query(
+        "INSERT INTO attachments (filename, original_name, mime_type, file_path, thumb_path, uploader, width, height) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+    )
+    .bind(&filename)
+    .bind(&orig)
+    .bind(mime)
+    .bind(file_path.to_string_lossy().to_string())
+    .bind("")
+    .bind(&_username)
+    .bind(0)
+    .bind(0)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let attachment_id: i32 = row.get("id");
+
+    Ok(Json(AudioUploadResponse {
+        url: format!("/attachments/{}", attachment_id),
+        duration_ms,
+    }))
+}
+
 async fn get_attachment(
     State(state): State<UploadState>,
     Path(id): Path<i32>,
@@ -220,6 +347,7 @@ async fn get_attachment_thumb(
 pub fn router(state: UploadState) -> Router {
     Router::new()
         .route("/upload", post(handle_upload))
+        .route("/upload/audio", post(handle_audio_upload))
         .route("/attachments/{id}", get(get_attachment))
         .route("/attachments/{id}/thumb", get(get_attachment_thumb))
         .with_state(state)
