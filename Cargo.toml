@@ -31,7 +31,9 @@ uuid = {version = "1", features = ["v4"]}
 reqwest = { version = "0.13", features = ["multipart"] }
 image = "0.25"
 rodio ={ version = "0.22.2", features = ["recording", "wav", "mp3"] }
+cpal = "0.17"
 hound = "3.5"
+spectrum-analyzer = "1.7"
 
 [dev-dependencies]
 proptest = "1"

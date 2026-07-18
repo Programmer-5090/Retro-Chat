@@ -206,9 +206,9 @@ pub fn format_audio_message(
     );
 
     let icon = if is_playing {
-        "\u{25B6}" // ▶ = playing
+        "\u{23F8}" // ⏸ = playing (show pause icon)
     } else {
-        "\u{23F8}" //  ⏸ = paused/stopped
+        "\u{25B6}" // ▶ = stopped (show play icon)
     };
 
     let duration_str = if msg.audio_duration_ms > 0 {
@@ -226,4 +226,47 @@ pub fn format_audio_message(
     );
 
     vec![Line::from(vec![ts_span, user_span, audio_span])]
+}
+
+const EIGHTHS: [char; 9] = [' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+
+fn remap_bins(bins: &[f32], width: usize) -> Vec<f32> {
+    if bins.is_empty() || width == 0 { return Vec::new(); }
+    let n = bins.len();
+    (0..width).map(|i| {
+        let t = i as f32 / (width - 1).max(1) as f32;
+        let src = t * (n - 1) as f32;
+        let lo = src.floor() as usize;
+        let hi = (lo + 1).min(n - 1);
+        let frac = src - lo as f32;
+        bins[lo] * (1.0 - frac) + bins[hi] * frac
+    }).collect()
+}
+
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    if let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) {
+        let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t.clamp(0.0, 1.0)) as u8;
+        Color::Rgb(l(ar, br), l(ag, bg), l(ab, bb))
+    } else { a }
+}
+
+pub fn format_waveform_bars(bins: &[f32], width: usize, rows: u16, center: Color, edge: Color) -> Vec<Line<'static>> {
+    if width == 0 || rows == 0 { return Vec::new(); }
+    let data = remap_bins(bins, width);
+    let total_rows = rows as usize;
+    let center_idx = (total_rows - 1) as f32 / 2.0;
+    let capacity = ((total_rows as f32 / 2.0).ceil() as i32) * 8;
+
+    let mut grid: Vec<Vec<Span<'static>>> = (0..total_rows).map(|_| Vec::with_capacity(width)).collect();
+    for (col, &v) in data.iter().enumerate() {
+        let t = if width > 1 { (col as f32 / (width - 1) as f32 - 0.5).abs() * 2.0 } else { 0.0 };
+        let color = lerp_color(center, edge, t);
+        let extent = (v.clamp(0.0, 1.0) * capacity as f32).round() as i32;
+        for row in 0..total_rows {
+            let rank = (row as f32 - center_idx).abs().floor() as i32;
+            let filled = (extent - rank * 8).clamp(0, 8);
+            grid[row].push(Span::styled(EIGHTHS[filled as usize].to_string(), Style::default().fg(color)));
+        }
+    }
+    grid.into_iter().map(Line::from).collect()
 }

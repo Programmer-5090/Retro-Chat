@@ -1,4 +1,5 @@
 use std::{ collections::{ HashMap, HashSet, VecDeque }, sync::Arc, time::{ Duration, Instant } };
+use cpal::traits::{ HostTrait, DeviceTrait, StreamTrait };
 
 use crossterm::{
     event::{
@@ -43,6 +44,7 @@ use super::render::{
     format_user_message,
     format_image_header,
     format_audio_message,
+    format_waveform_bars,
     make_system_msg,
     username_color,
 };
@@ -83,6 +85,8 @@ struct AudioUploadResponse {
     url: String,
     duration_ms: u32,
 }
+
+
 
 async fn do_image_upload(path: &str, token: &str) -> Result<UploadResponse, String> {
     let bytes = tokio::fs::read(path).await.map_err(|e| format!("cannot read file: {}", e))?;
@@ -215,9 +219,19 @@ pub struct App {
     // Audio recording
     is_recording: bool,
     record_start: Option<Instant>,
+    record_stream: Option<cpal::Stream>,
+    record_samples: Option<Arc<std::sync::Mutex<Vec<f32>>>>,
+    record_channels: Option<std::num::NonZeroU16>,
+    record_sample_rate: Option<std::num::NonZeroU32>,
 
     // Audio playback
     playing_audio: Option<String>, // message id currently playing
+
+    // Waveform visualization
+    waveform_cache: HashMap<String, Vec<f32>>,
+    waveform_rx: mpsc::UnboundedReceiver<(String, Vec<f32>)>,
+    waveform_tx: mpsc::UnboundedSender<(String, Vec<f32>)>,
+    inflight_waveforms: HashSet<String>,
 }
 
 impl App {
@@ -251,6 +265,7 @@ impl App {
         ta.set_cursor_style(Style::default().bg(default_theme.primary));
 
         let (image_results_tx, image_rx) = mpsc::unbounded_channel();
+        let (waveform_tx, waveform_rx) = mpsc::unbounded_channel();
 
         let mut app = Self {
             username,
@@ -301,13 +316,22 @@ impl App {
             dirty: true,
             is_recording: false,
             record_start: None,
+            record_stream: None,
+            record_samples: None,
+            record_channels: None,
+            record_sample_rate: None,
             playing_audio: None,
+            waveform_cache: HashMap::new(),
+            waveform_rx,
+            waveform_tx,
+            inflight_waveforms: HashSet::new(),
         };
         app.cube.color = default_theme.primary;
         app.matrix_rain.color = default_theme.primary;
         app.starfield.color = default_theme.primary;
         app.torus.color = default_theme.primary;
         app.sand.color = default_theme.primary;
+
         app
     }
 
@@ -468,6 +492,20 @@ impl App {
                 match self.image_rx.try_recv() {
                     Ok((id, proto)) => {
                         self.image_cache.insert(id, proto);
+                        self.dirty = true;
+                    }
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        break;
+                    }
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        break;
+                    }
+                }
+            }
+            loop {
+                match self.waveform_rx.try_recv() {
+                    Ok((id, bins)) => {
+                        self.waveform_cache.insert(id, bins);
                         self.dirty = true;
                     }
                     Err(mpsc::error::TryRecvError::Empty) => {
@@ -884,12 +922,43 @@ impl App {
                 }
                 "/record" => {
                     if self.is_recording {
-                        // Stop recording
+                        // Stop recording — drop the stream to stop capture,
+                        // then take the accumulated samples.
                         self.is_recording = false;
                         let elapsed = self.record_start
                             .map(|s| s.elapsed().as_millis() as u32)
                             .unwrap_or(0);
                         self.record_start = None;
+
+                        // Drop the cpal stream to stop the capture callback
+                        self.record_stream.take();
+
+                        let samples = self.record_samples
+                            .take()
+                            .map(|arc| match Arc::try_unwrap(arc) {
+                                Ok(mutex) => mutex.into_inner().unwrap(),
+                                Err(arc) => arc.lock().unwrap().clone(),
+                            })
+                            .unwrap_or_default();
+                        let channels = self.record_channels.take();
+                        let sample_rate = self.record_sample_rate.take();
+
+                        if samples.is_empty() || channels.is_none() || sample_rate.is_none() {
+                            self.ingest_msg(make_system_msg("No audio captured."), true);
+                            return;
+                        }
+
+                        let channels = channels.unwrap();
+                        let sample_rate = sample_rate.unwrap();
+
+                        // Trim first ~100ms of WASAPI init noise / pop
+                        let trim = ((sample_rate.get() as usize) * (channels.get() as usize)) / 10;
+                        let samples = if samples.len() > trim {
+                            samples[trim..].to_vec()
+                        } else {
+                            samples
+                        };
+
                         self.ingest_msg(
                             make_system_msg(
                                 &format!(
@@ -903,95 +972,156 @@ impl App {
                         let token = self.token.clone();
                         let writer = self.writer.clone();
                         let err_tx = self.server_tx.clone();
-                        let duration_ms = elapsed;
 
-                        tokio::task::spawn_blocking(move || {
-                            use rodio::Source;
-                            use rodio::microphone::MicrophoneBuilder;
-
-                            let err_tx_inner = err_tx.clone();
-                            let result = (|| -> Result<(), String> {
-                                let mic = MicrophoneBuilder::new()
-                                    .default_device()
-                                    .map_err(|e| format!("No input device: {}", e))?
-                                    .default_config()
-                                    .map_err(|e| format!("Mic config error: {}", e))?
-                                    .open_stream()
-                                    .map_err(|e| format!("Mic open error: {}", e))?;
-
-                                let sample_rate = mic.sample_rate();
-                                let channels = mic.channels();
-
-                                let recording = mic
-                                    .take_duration(
-                                        std::time::Duration::from_millis(duration_ms as u64)
-                                    )
-                                    .record();
-
-                                let mut samples: Vec<f32> = Vec::new();
-                                for s in recording {
-                                    samples.push(s);
+                        tokio::spawn(async move {
+                            let wav_path = std::env::temp_dir().join("retro_audio_record.wav");
+                            let spec = hound::WavSpec {
+                                channels: channels.get(),
+                                sample_rate: sample_rate.get(),
+                                bits_per_sample: 16,
+                                sample_format: hound::SampleFormat::Int,
+                            };
+                            let mut wav_writer = match hound::WavWriter::create(&wav_path, spec) {
+                                Ok(w) => w,
+                                Err(e) => {
+                                    let _ = err_tx.send(format!("WAV create error: {}", e));
+                                    return;
                                 }
-
-                                if samples.is_empty() {
-                                    return Err("No audio captured".to_string());
+                            };
+                            for &s in &samples {
+                                let sample_i16 = (s.clamp(-1.0, 1.0) *
+                                    (i16::MAX as f32)) as i16;
+                                if let Err(e) = wav_writer.write_sample(sample_i16) {
+                                    let _ = err_tx.send(format!("WAV write error: {}", e));
+                                    return;
                                 }
-
-                                // Write WAV to temp file
-                                let wav_path = std::env::temp_dir().join("retro_audio_record.wav");
-                                let spec = hound::WavSpec {
-                                    channels: channels.get(),
-                                    sample_rate: sample_rate.get(),
-                                    bits_per_sample: 16,
-                                    sample_format: hound::SampleFormat::Int,
-                                };
-                                let mut wav_writer = hound::WavWriter
-                                    ::create(&wav_path, spec)
-                                    .map_err(|e| format!("WAV create error: {}", e))?;
-                                for &s in &samples {
-                                    let sample_i16 = (s.clamp(-1.0, 1.0) *
-                                        (i16::MAX as f32)) as i16;
-                                    wav_writer
-                                        .write_sample(sample_i16)
-                                        .map_err(|e| format!("WAV write error: {}", e))?;
+                            }
+                            if let Err(e) = wav_writer.finalize() {
+                                let _ = err_tx.send(format!("WAV finalize error: {}", e));
+                                return;
+                            }
+                            match do_audio_upload(&wav_path.to_string_lossy(), &token).await {
+                                Ok(resp) => {
+                                    let wire = format!(
+                                        "/audio {} {}\n",
+                                        resp.url,
+                                        resp.duration_ms
+                                    );
+                                    let _ = writer
+                                        .lock().await
+                                        .write_all(wire.as_bytes()).await;
                                 }
-                                wav_writer
-                                    .finalize()
-                                    .map_err(|e| format!("WAV finalize error: {}", e))?;
-
-                                // Upload via async runtime
-                                let rt = tokio::runtime::Handle::current();
-                                rt.block_on(async move {
-                                    let path_str = wav_path.to_string_lossy().to_string();
-                                    match do_audio_upload(&path_str, &token).await {
-                                        Ok(resp) => {
-                                            let wire = format!(
-                                                "/audio {} {}\n",
-                                                resp.url,
-                                                resp.duration_ms
-                                            );
-                                            let _ = writer
-                                                .lock().await
-                                                .write_all(wire.as_bytes()).await;
-                                        }
-                                        Err(e) => {
-                                            let _ = err_tx_inner.send(
-                                                format!("Audio upload failed: {}", e)
-                                            );
-                                        }
-                                    }
-                                });
-                                Ok(())
-                            })();
-
-                            if let Err(e) = result {
-                                let _ = err_tx.send(e);
+                                Err(e) => {
+                                    let _ = err_tx.send(
+                                        format!("Audio upload failed: {}", e)
+                                    );
+                                }
                             }
                         });
                     } else {
-                        // Start recording
+                        // Start recording — open cpal input stream with callback
+                        let host = cpal::default_host();
+                        let device = match host.default_input_device() {
+                            Some(d) => d,
+                            None => {
+                                self.ingest_msg(make_system_msg("No input device found."), true);
+                                return;
+                            }
+                        };
+                        let config = match device.default_input_config() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                self.ingest_msg(
+                                    make_system_msg(&format!("Mic config error: {}", e)),
+                                    true
+                                );
+                                return;
+                            }
+                        };
+
+                        let channels = config.channels();
+                        let sample_rate = config.sample_rate();
+                        let channels_nz = std::num::NonZeroU16::new(channels).unwrap_or(std::num::NonZeroU16::new(1).unwrap());
+                        let sample_rate_nz = std::num::NonZeroU32::new(sample_rate).unwrap_or(std::num::NonZeroU32::new(44100).unwrap());
+
+                        let samples_buf = Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
+                        let samples_for_cb = samples_buf.clone();
+
+                        let err_tx = self.server_tx.clone();
+                        let stream = match config.sample_format() {
+                            cpal::SampleFormat::F32 => {
+                                device.build_input_stream(
+                                    &config.into(),
+                                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                                        if let Ok(mut buf) = samples_for_cb.lock() {
+                                            buf.extend_from_slice(data);
+                                        }
+                                    },
+                                    move |err| {
+                                        let _ = err_tx.send(format!("Mic error: {}", err));
+                                    },
+                                    None,
+                                )
+                            }
+                            cpal::SampleFormat::I16 => {
+                                let sb = samples_for_cb.clone();
+                                let et = err_tx.clone();
+                                device.build_input_stream(
+                                    &cpal::StreamConfig {
+                                        channels,
+                                        sample_rate,
+                                        buffer_size: cpal::BufferSize::Default,
+                                    },
+                                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                                        if let Ok(mut buf) = sb.lock() {
+                                            for &s in data {
+                                                buf.push(s as f32 / i16::MAX as f32);
+                                            }
+                                        }
+                                    },
+                                    move |err| {
+                                        let _ = et.send(format!("Mic error: {}", err));
+                                    },
+                                    None,
+                                )
+                            }
+                            fmt => {
+                                self.ingest_msg(
+                                    make_system_msg(
+                                        &format!("Unsupported mic format: {:?}", fmt)
+                                    ),
+                                    true
+                                );
+                                return;
+                            }
+                        };
+
+                        let stream = match stream {
+                            Ok(s) => s,
+                            Err(e) => {
+                                self.ingest_msg(
+                                    make_system_msg(&format!("Mic open error: {}", e)),
+                                    true
+                                );
+                                return;
+                            }
+                        };
+
+                        if let Err(e) = stream.play() {
+                            self.ingest_msg(
+                                make_system_msg(&format!("Mic start error: {}", e)),
+                                true
+                            );
+                            return;
+                        }
+
                         self.is_recording = true;
                         self.record_start = Some(Instant::now());
+                        self.record_stream = Some(stream);
+                        self.record_samples = Some(samples_buf);
+                        self.record_channels = Some(channels_nz);
+                        self.record_sample_rate = Some(sample_rate_nz);
+
                         self.ingest_msg(
                             make_system_msg("Recording audio... (type /record again to stop)"),
                             true
@@ -1110,6 +1240,14 @@ impl App {
             return;
         }
 
+        if line == "__PLAYBACK_DONE__" {
+            if self.playing_audio.is_some() {
+                self.playing_audio = None;
+                self.ingest_msg(make_system_msg("Playback finished."), true);
+            }
+            return;
+        }
+
         if let Ok(msg) = serde_json::from_str::<ChatMessage>(line) {
             match msg.message_type {
                 MessageType::RoomList => {
@@ -1176,12 +1314,20 @@ impl App {
                     let is_current_room = msg.room.is_empty() || msg.room == self.current_room;
                     let room = msg.room.clone();
                     let is_history = msg.is_history;
+                    let msg_id = msg.id.clone();
+                    let audio_url = msg.audio_note_url.clone();
                     if is_history && msg.username == self.username && !msg.id.is_empty() {
                         self.read_message_ids.insert(msg.id.clone());
                     }
                     self.ingest_msg(msg, is_current_room || is_history);
                     if is_current_room && !is_history {
                         self.clear_room_read_state(&room);
+                    }
+                    if !self.waveform_cache.contains_key(&msg_id)
+                        && !self.inflight_waveforms.contains(&msg_id)
+                    {
+                        self.inflight_waveforms.insert(msg_id.clone());
+                        self.spawn_waveform_fetch(msg_id, audio_url);
                     }
                 }
                 MessageType::TypingNotification => {
@@ -1273,9 +1419,27 @@ impl App {
                 let header_lines = 1u16;
                 header_lines + self.image_cell_height
             }
-            MessageType::AudioMessage => 1,
+            MessageType::AudioMessage => {
+                if self.waveform_cache.contains_key(&msg.id) { 4 } else { 1 }
+            }
             MessageType::SystemNotification => {
-                if msg.content.is_empty() { 1 } else { msg.content.lines().count() as u16 }
+                if msg.content.is_empty() {
+                    return 1;
+                }
+                let wrap_width = content_width as usize;
+                if wrap_width == 0 {
+                    return 1;
+                }
+                // format_system_message wraps each line as "*** {line} ***"
+                let overhead = "*** ".len() + " ***".len();
+                let mut total = 0u16;
+                for line in msg.content.lines() {
+                    let line_chars = line.chars().count() + overhead;
+                    let rows = ((line_chars as u16) + (wrap_width as u16) - 1) /
+                        (wrap_width as u16);
+                    total += rows.max(1);
+                }
+                total.max(1)
             }
             MessageType::UserMessage => {
                 let ts_len = 5usize;
@@ -1374,7 +1538,6 @@ impl App {
             return;
         }
 
-        // Find the most recent AudioMessage in the current room
         let audio_msg = self
             .messages_for_room(&self.current_room)
             .collect::<Vec<_>>()
@@ -1399,27 +1562,103 @@ impl App {
             self.playing_audio = Some(playing_id);
             self.ingest_msg(make_system_msg("Playing audio..."), true);
 
+            let log_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("audio_debug.log");
+            {
+                use std::io::Write;
+                let _ = std::fs::OpenOptions::new()
+                    .create(true).write(true).truncate(true).open(&log_path)
+                    .and_then(|mut f| writeln!(f, "[audio-debug] log cleared, new play request"));
+            }
+
             tokio::spawn(async move {
+                let t0 = std::time::Instant::now();
+                let log_path_outer = log_path.clone();
+                let log_outer = |msg: &str| {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true).append(true).open(&log_path_outer)
+                    {
+                        let _ = writeln!(f, "[{:?}] [audio-debug/async] {}", t0.elapsed(), msg);
+                    }
+                };
+                log_outer(&format!("fetching {}", full_url));
                 match reqwest::get(&full_url).await {
                     Ok(resp) => {
+                        log_outer(&format!("download OK, status {}", resp.status()));
                         match resp.bytes().await {
                             Ok(bytes) => {
-                                let _ = tokio::task::spawn_blocking(move || {
-                                    let cursor = std::io::Cursor::new(bytes.to_vec());
-                                    match rodio::Decoder::new(cursor) {
-                                        Ok(decoder) => {
-                                            let handle = rodio::DeviceSinkBuilder
-                                                ::open_default_sink()
-                                                .unwrap();
-                                            let player = rodio::Player::connect_new(&handle.mixer());
-                                            player.append(decoder);
-                                            player.sleep_until_end();
+                                log_outer(&format!("{} bytes received, spawning blocking task", bytes.len()));
+                                let audio_bytes = bytes.to_vec();
+                                let err_tx_for_play = err_tx.clone();
+                                let err_tx_clone = err_tx_for_play.clone();
+                                let result = tokio::task::spawn_blocking(move || {
+                                    let log_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                                        .join("audio_debug.log");
+                                    let mut f = std::fs::OpenOptions::new()
+                                        .create(true).append(true).open(&log_path).ok();
+                                    let log = |f: &mut Option<std::fs::File>, msg: &str| {
+                                        use std::io::Write;
+                                         if let Some(file) = f {
+                                            let _ = writeln!(file, "[{:?}] [audio-debug] {}",
+                                                std::time::Instant::now(), msg);
+                                        }
+                                    };
+                                    log(&mut f, &format!("spawn_blocking started, {} bytes", audio_bytes.len()));
+                                    let cursor = std::io::Cursor::new(audio_bytes);
+                                    log(&mut f, "opening default sink...");
+                                    let mut handle = match rodio::DeviceSinkBuilder::open_default_sink() {
+                                        Ok(h) => {
+                                            log(&mut f, "sink OK");
+                                            h
                                         }
                                         Err(e) => {
-                                            let _ = err_tx.send(format!("Decode error: {}", e));
+                                            log(&mut f, &format!("sink FAILED: {}", e));
+                                            let _ = err_tx_for_play.send(
+                                                format!("Audio device error: {}", e)
+                                            );
+                                            return;
                                         }
+                                    };
+                                    handle.log_on_drop(false);
+                                    let mixer = handle.mixer();
+
+                                    log(&mut f, "playing audio via rodio::play...");
+                                    let player = match rodio::play(mixer, cursor) {
+                                        Ok(p) => {
+                                            log(&mut f, "player OK");
+                                            p
+                                        }
+                                        Err(e) => {
+                                            log(&mut f, &format!("play FAILED: {}", e));
+                                            let _ = err_tx_for_play.send(
+                                                format!("Audio play error: {}", e)
+                                            );
+                                            return;
+                                        }
+                                    };
+                                    player.set_volume(0.5);
+
+                                    log(&mut f, "waiting for playback to finish...");
+                                    while !player.empty() {
+                                        std::thread::sleep(std::time::Duration::from_millis(100));
                                     }
+                                    log(&mut f, "playback finished, dropping handle now");
+                                    drop(player);
+                                    drop(handle);
+                                    let _ = err_tx_for_play.send("__PLAYBACK_DONE__".to_string());
                                 }).await;
+                                if let Err(join_err) = &result {
+                                    let log_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                                        .join("audio_debug.log");
+                                    let _ = std::fs::OpenOptions::new()
+                                        .create(true).append(true).open(&log_path)
+                                        .and_then(|mut f| {
+                                            use std::io::Write;
+                                            writeln!(f, "[audio-debug] PANIC in blocking task: {}", join_err)
+                                        });
+                                    let _ = err_tx_clone.send(format!("Audio playback panicked: {}", join_err));
+                                }
                             }
                             Err(e) => {
                                 let _ = err_tx.send(format!("Audio download error: {}", e));
@@ -1432,6 +1671,24 @@ impl App {
                 }
             });
         }
+    }
+
+    fn spawn_waveform_fetch(&self, msg_id: String, audio_url: String) {
+        if audio_url.is_empty() { return; }
+        let tx = self.waveform_tx.clone();
+        let base = std::env
+            ::var("UPLOAD_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:8083".to_string());
+        let url = format!("{}{}", base, audio_url);
+        tokio::spawn(async move {
+            let Ok(resp) = reqwest::get(&url).await else { return; };
+            let Ok(bytes) = resp.bytes().await else { return; };
+            if let Ok(Some(bars)) = tokio::task::spawn_blocking(move || {
+                compute_waveform_envelope(&bytes, 32)
+            }).await {
+                let _ = tx.send((msg_id, bars));
+            }
+        });
     }
 
     fn render_title_bar(&self, f: &mut Frame, area: Rect) {
@@ -1580,7 +1837,7 @@ impl App {
                     }
                     MessageType::SystemNotification => {
                         let lines = format_system_message(msg, self.theme.accent);
-                        let para = Paragraph::new(lines);
+                        let para = Paragraph::new(lines).wrap(Wrap { trim: false });
                         f.render_widget(para, msg_area);
                     }
                     MessageType::ImageMessage => {
@@ -1627,8 +1884,28 @@ impl App {
                         };
                         let is_playing = self.playing_audio.as_deref() == Some(&msg.id);
                         let lines = format_audio_message(msg, color, is_playing);
+
+                        let text_area = Rect { height: 1.min(msg_area.height), ..msg_area };
                         let para = Paragraph::new(lines);
-                        f.render_widget(para, msg_area);
+                        f.render_widget(para, text_area);
+
+                        if let Some(bins) = self.waveform_cache.get(&msg.id) {
+                            let wave_area = Rect {
+                                y: msg_area.y + 1,
+                                height: msg_area.height.saturating_sub(1),
+                                ..msg_area
+                            };
+                            if wave_area.height > 0 && wave_area.width > 0 {
+                                let wave_lines = format_waveform_bars(
+                                    bins,
+                                    wave_area.width as usize,
+                                    wave_area.height,
+                                    Color::Rgb(255, 150, 60),
+                                    Color::Rgb(230, 60, 150),
+                                );
+                                f.render_widget(Paragraph::new(wave_lines), wave_area);
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -1719,7 +1996,7 @@ impl App {
         let typing_text = {
             let names: Vec<&str> = self.typing_users
                 .iter()
-                .filter(|(_, (r, _))| (r == &self.current_room || r.starts_with("__dm__")))
+                .filter(|(_, (r, _))| r == &self.current_room || r.starts_with("__dm__"))
                 .map(|(u, _)| u.as_str())
                 .collect();
             if names.is_empty() {
@@ -1897,4 +2174,33 @@ impl App {
             self.render_help_popup(f, area);
         }
     }
+}
+
+fn compute_waveform_envelope(bytes: &[u8], num_bars: usize) -> Option<Vec<f32>> {
+    use rodio::Source;
+    let decoder = rodio::Decoder::new(std::io::Cursor::new(bytes.to_vec())).ok()?;
+    let channels = decoder.channels().get() as usize;
+    let samples: Vec<f32> = decoder.into_iter().collect();
+    if samples.is_empty() || channels == 0 { return None; }
+
+    let mono: Vec<f32> = if channels > 1 {
+        samples
+            .chunks(channels)
+            .map(|c| c.iter().sum::<f32>() / channels as f32)
+            .collect()
+    } else {
+        samples
+    };
+
+    let chunk_size = (mono.len() / num_bars).max(1);
+    let mut bars: Vec<f32> = mono
+        .chunks(chunk_size)
+        .take(num_bars)
+        .map(|c| (c.iter().map(|s| s * s).sum::<f32>() / c.len() as f32).sqrt())
+        .collect();
+    while bars.len() < num_bars { bars.push(0.0); }
+
+    let max_v = bars.iter().cloned().fold(0.0f32, f32::max).max(1e-6);
+    for b in bars.iter_mut() { *b = (*b / max_v).clamp(0.0, 1.0); }
+    Some(bars)
 }

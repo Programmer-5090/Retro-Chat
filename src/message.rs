@@ -58,6 +58,7 @@ pub fn generate_message_id() -> String {
 
 fn build_msg(text: &str, room: &str) -> String {
     let msg = ChatMessage {
+        username: "Server".to_string(),
         content: text.to_string(),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::SystemNotification,
