@@ -2,7 +2,7 @@ use proptest::prelude::*;
 
 use super::types::{ FocusPane, THEMES, UiAppState };
 use ratatui::style::Color;
-use super::render::{
+use super::format::{
     border_style,
     format_title,
     format_user_message,
@@ -17,7 +17,7 @@ fn arb_message_type() -> impl Strategy<Value = MessageType> {
     prop_oneof![
         Just(MessageType::UserMessage),
         Just(MessageType::SystemNotification),
-        Just(MessageType::ImageMessage),
+        Just(MessageType::ImageMessage)
     ]
 }
 
@@ -275,10 +275,16 @@ fn test_image_message_with_dimensions() {
     let lines = format_image_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan);
     assert_eq!(lines.len(), 2);
 
-    let line1: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    let line1: String = lines[0].spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
     assert_eq!(line1, "[15:51] jet \u{25B6}");
 
-    let line2: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+    let line2: String = lines[1].spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
     assert!(line2.contains("** image **"), "should show ** image **, got: {line2}");
     assert!(!line2.contains("800x600"), "dimensions should not appear in rendered text");
 }
@@ -296,10 +302,16 @@ fn test_image_message_no_dimensions() {
     let lines = format_image_message(&msg, Color::Rgb(255, 176, 0), Color::Cyan);
     assert_eq!(lines.len(), 2);
 
-    let line1: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    let line1: String = lines[0].spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
     assert!(line1.contains("[09:15]"), "line1 missing timestamp");
     assert!(line1.contains("alice"), "line1 missing username");
 
-    let line2: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+    let line2: String = lines[1].spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
     assert!(line2.contains("** image **"), "line2 missing ** image **");
 }

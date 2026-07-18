@@ -1,14 +1,14 @@
+// From NoctaVox by Jaxx497
 use spectrum_analyzer::{FrequencyLimit, samples_fft_to_spectrum, windows::hann_window};
+
+pub const NUM_BANDS: usize = 24;
 
 pub struct SpectrumState {
     bins: Vec<f32>,
-    display_bins: Vec<f32>,
     decay_factor: f32,
     bands: Vec<(f32, f32)>,
     band_peaks: Vec<f32>,
     sample_rate: u32,
-    last_display_width: usize,
-    bins_dirty: bool,
 }
 
 impl SpectrumState {
@@ -21,17 +21,19 @@ impl SpectrumState {
 
         if self.sample_rate != sample_rate {
             self.sample_rate = sample_rate;
-            let freq_resolution = sample_rate as f32 / fft_size as f32;
-            self.bands.clear();
-            let mut freq = 20.0_f32;
-            while freq < 20000.0 {
-                let next = (freq * 1.05).max(freq + freq_resolution);
-                self.bands.push((freq, next.min(20000.0)));
-                freq = next;
-            }
-            let n = self.bands.len();
-            self.band_peaks.resize(n, 1e-3);
-            self.bins.resize(n, 0.0);
+            let log_min = 20f32.ln();
+            let log_max = 20000f32.ln();
+            self.bands = (0..NUM_BANDS)
+                .map(|i| {
+                    let t0 = (i as f32) / (NUM_BANDS as f32);
+                    let t1 = ((i + 1) as f32) / (NUM_BANDS as f32);
+                    let f0 = (log_min + t0 * (log_max - log_min)).exp();
+                    let f1 = (log_min + t1 * (log_max - log_min)).exp();
+                    (f0, f1)
+                })
+                .collect();
+            self.band_peaks.resize(NUM_BANDS, 1e-3);
+            self.bins.resize(NUM_BANDS, 0.0);
         }
 
         if samples.len() < fft_size {
@@ -82,7 +84,6 @@ impl SpectrumState {
             let mag = if count > 0 { sum / count as f32 } else { 0.0 };
             let normalized = mag / (fft_size as f32 / 2.0);
 
-            // Per-band auto-gain: instant attack, slow release
             if normalized > self.band_peaks[i] {
                 self.band_peaks[i] = normalized;
             } else {
@@ -97,35 +98,10 @@ impl SpectrumState {
                 self.bins[i] *= self.decay_factor;
             }
         }
-
-        self.bins_dirty = true;
     }
 
-    pub fn remap_display(&mut self, width: usize) {
-        if self.bins.is_empty() || (!self.bins_dirty && self.last_display_width == width) {
-            return;
-        }
-        let num_bins = self.bins.len();
-        self.display_bins = (0..width)
-            .map(|i| {
-                let t = i as f32 / (width - 1).max(1) as f32;
-                let src = t * (num_bins - 1) as f32;
-                let lo = src.floor() as usize;
-                let hi = (lo + 1).min(num_bins - 1);
-                let frac = src - lo as f32;
-                self.bins[lo] * (1.0 - frac) + self.bins[hi] * frac
-            })
-            .collect();
-        self.last_display_width = width;
-        self.bins_dirty = false;
-    }
-
-    pub fn get_display_bins(&self) -> &[f32] {
-        &self.display_bins
-    }
-
-    pub fn set_decay(&mut self, d: f32) {
-        self.decay_factor = d
+    pub fn bins(&self) -> &[f32] {
+        &self.bins
     }
 }
 
@@ -133,13 +109,10 @@ impl Default for SpectrumState {
     fn default() -> Self {
         SpectrumState {
             bins: Vec::new(),
-            display_bins: Vec::new(),
             band_peaks: Vec::new(),
             bands: Vec::new(),
             decay_factor: 0.85,
             sample_rate: 0,
-            last_display_width: 0,
-            bins_dirty: false,
         }
     }
 }

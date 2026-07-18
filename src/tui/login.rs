@@ -135,18 +135,13 @@ pub async fn run_login_ui(
     disable_raw_mode()?;
     execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
 
-    let token = prompt_msg.content
-        .split("Token: ")
-        .nth(1)
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let token = prompt_msg.content.split("Token: ").nth(1).unwrap_or("").trim().to_string();
 
     Ok((reader, writer, token))
 }
 
 /// Reveals the ByteChat logo a couple of characters at a time. Any keypress
-/// skips straight to the full logo (and the short hold that follows).
+/// skips straight to the full logo (and the short pause that follows).
 fn run_splash(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -221,9 +216,13 @@ fn draw_splash(f: &mut Frame, lines: &[&str], revealed_lines: usize, revealed_co
         );
     }
 
-    let logo_width = (lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16).min(
-        area.width
-    );
+    let logo_width = (
+        lines
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0) as u16
+    ).min(area.width);
     let block_height = (out_lines.len() as u16).min(area.height);
 
     let [_, vmid, _] = Layout::vertical([
@@ -246,8 +245,8 @@ fn draw_password_screen(f: &mut Frame, prompt: &str, password: &str, status: Opt
     let amber = Style::default().fg(Color::Rgb(255, 176, 0));
     let masked: String = "*".repeat(password.chars().count());
 
-    let box_w = 54u16.min(area.width.saturating_sub(4)).max(20);
-    let box_h = 9u16.min(area.height.saturating_sub(2)).max(7);
+    let box_w = (54u16).min(area.width.saturating_sub(4)).max(20);
+    let box_h = (9u16).min(area.height.saturating_sub(2)).max(7);
 
     let [_, vmid, _] = Layout::vertical([
         Constraint::Min(0),

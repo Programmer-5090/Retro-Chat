@@ -1,272 +1,468 @@
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{ Hash, Hasher };
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{ Color, Modifier, Style };
+use ratatui::symbols::border;
+use ratatui::text::Line;
+use ratatui::widgets::{ Block, Borders, Clear, List, ListItem, Paragraph, Sparkline, Wrap };
+use ratatui_image::Image as RatatuiImage;
 
-use ratatui::{ style::{ Color, Modifier, Style }, text::{ Line, Span } };
-use chrono::Local;
+use super::app::App;
+use super::format::{
+    border_style,
+    format_title,
+    format_system_message,
+    format_user_message,
+    format_image_header,
+    format_audio_message,
+    format_spectrum_bars,
+    format_idle_waveform,
+    username_color,
+};
+use super::types::{ FocusPane, AnimationKind };
+use crate::message::{ dm_display_name, MessageType };
 
-use crate::ChatMessage;
-use crate::message::MessageType;
-use super::types::{ FocusPane, Theme };
-
-pub fn border_style(pane: FocusPane, focus: FocusPane, pulse_tick: u64, theme: &Theme) -> Style {
-    if pane == focus {
-        let phase = ((pulse_tick as f64) * 0.08).sin() * 0.5 + 0.5;
-        let factor = 0.7 + phase * 0.3;
-        if let Color::Rgb(r, g, b) = theme.accent {
-            let nr = ((r as f64) * factor) as u8;
-            let ng = ((g as f64) * factor) as u8;
-            let nb = ((b as f64) * factor) as u8;
-            Style::default().fg(Color::Rgb(nr, ng, nb))
+pub(crate) fn render_title_bar(app: &App, f: &mut Frame, area: Rect) {
+    let pulse = |c: Color| -> Color {
+        if let Color::Rgb(r, g, b) = c {
+            let f = 0.6 + 0.4 * ((app.ui.pulse_tick as f64) * 0.04).sin();
+            Color::Rgb(((r as f64) * f) as u8, ((g as f64) * f) as u8, ((b as f64) * f) as u8)
         } else {
-            Style::default().fg(theme.accent)
+            c
         }
-    } else {
-        Style::default().fg(theme.primary)
-    }
-}
-
-pub fn username_color(username: &str) -> Color {
-    let mut hasher = DefaultHasher::new();
-    username.hash(&mut hasher);
-    let h = (hasher.finish() as f64) / (u64::MAX as f64);
-    let hue = h * 360.0;
-    let (r, g, b) = hsl_to_rgb(hue, 0.8, 0.6);
-    Color::Rgb(r, g, b)
-}
-
-fn hsl_to_rgb(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let x = c * (1.0 - (((h / 60.0) % 2.0) - 1.0).abs());
-    let m = l - c / 2.0;
-    let (r1, g1, b1) = match (h as i32) % 360 {
-        0..=59 => (c, x, 0.0),
-        60..=119 => (x, c, 0.0),
-        120..=179 => (0.0, c, x),
-        180..=239 => (0.0, x, c),
-        240..=299 => (x, 0.0, c),
-        _ => (c, 0.0, x),
     };
-    (((r1 + m) * 255.0) as u8, ((g1 + m) * 255.0) as u8, ((b1 + m) * 255.0) as u8)
+    let title = format_title(&app.username, pulse(app.ui.theme.primary));
+    let widget = Paragraph::new(title)
+        .style(Style::default())
+        .alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(widget, area);
 }
 
-pub fn format_title(username: &str, color: Color) -> Line<'static> {
-    let text = format!("@{}", username);
-    let line = format!("{}{}{}", "\u{28FF}".repeat(4), text, "\u{28FF}".repeat(4));
-    Line::from(Span::styled(line, Style::default().fg(color)))
-}
+pub(crate) fn render_sidebar(app: &mut App, f: &mut Frame, area: Rect) {
+    app.ui.sidebar_area = area;
 
-fn highlight_mentions(text: &str, base_color: Color, mention_color: Color) -> Vec<Span<'static>> {
-    let chars: Vec<char> = text.chars().collect();
-    let len = chars.len();
-    let mut spans = Vec::new();
-    let mut i = 0;
-    while i < len {
-        if chars[i] == '@' && i + 1 < len && chars[i + 1].is_alphabetic() {
-            let start = i;
-            i += 1;
-            while i < len && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-') {
-                i += 1;
-            }
-            let mention: String = chars[start..i].iter().collect();
-            spans.push(
-                Span::styled(
-                    mention,
-                    Style::default().fg(mention_color).add_modifier(Modifier::BOLD)
-                )
-            );
-        } else {
-            let start = i;
-            while i < len && !(chars[i] == '@' && i + 1 < len && chars[i + 1].is_alphabetic()) {
-                i += 1;
-            }
-            let seg: String = chars[start..i].iter().collect();
-            spans.push(Span::styled(seg, Style::default().fg(base_color)));
+    let max_select = app.rooms.len().saturating_sub(1);
+    match app.ui.sidebar_state.selected() {
+        Some(i) if i > max_select => {
+            app.ui.sidebar_state.select(Some(max_select));
         }
+        None if !app.rooms.is_empty() => {
+            app.ui.sidebar_state.select(Some(0));
+        }
+        _ => {}
     }
-    spans
-}
 
-pub fn format_user_message(
-    msg: &ChatMessage,
-    color: Color,
-    mention_color: Color,
-    dot_color: Option<Color>
-) -> Vec<Line<'static>> {
-    let timestamp = msg.timestamp.chars().take(5).collect::<String>();
-    let ts_span = Span::styled(format!("[{}] ", timestamp), Style::default().fg(color));
-    let dot_span = dot_color.map(|dc| { Span::styled("\u{25CF} ", Style::default().fg(dc)) });
-    let user_span = Span::styled(
-        format!("{} \u{25B6} ", msg.username.clone()),
-        Style::default().fg(color).add_modifier(Modifier::BOLD)
-    );
-    let dot_extra = dot_span
-        .as_ref()
-        .map(|_| 2u16)
-        .unwrap_or(0);
-    let indent = " ".repeat(timestamp.len() + msg.username.len() + 5 + (dot_extra as usize));
-    let indent_span = Span::styled(indent, Style::default().fg(color));
-    let mut lines: Vec<Line<'static>> = msg.content
-        .lines()
-        .enumerate()
-        .map(|(i, line)| {
-            let content_spans = highlight_mentions(line, color, mention_color);
-            if i == 0 {
-                let mut spans = vec![ts_span.clone()];
-                if let Some(ref dot) = dot_span {
-                    spans.push(dot.clone());
-                }
-                spans.push(user_span.clone());
-                spans.extend(content_spans);
-                Line::from(spans)
+    let items: Vec<ListItem> = app.rooms
+        .iter()
+        .map(|room| {
+            let has_unread = app.read.unread_rooms.contains(room);
+            let active = room == &app.current_room;
+            let prefix = if has_unread { "\u{25CF} " } else { "  " };
+            let display = format!("{}{}", prefix, dm_display_name(room, &app.username));
+            let style = if active {
+                Style::default().fg(app.ui.theme.accent)
+            } else if has_unread {
+                Style::default().fg(app.ui.theme.accent).add_modifier(Modifier::BOLD)
             } else {
-                let mut spans = vec![indent_span.clone()];
-                spans.extend(content_spans);
-                Line::from(spans)
-            }
+                Style::default().fg(app.ui.theme.primary)
+            };
+            ListItem::new(ratatui::text::Line::from(ratatui::text::Span::styled(display, style)))
         })
         .collect();
-    if lines.is_empty() {
-        let mut spans = vec![ts_span];
-        if let Some(dot) = dot_span {
-            spans.push(dot);
-        }
-        spans.push(user_span);
-        lines.push(Line::from(spans));
-    }
-    lines
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(
+            border_style(FocusPane::Sidebar, app.input.focus, app.ui.pulse_tick, &app.ui.theme)
+        )
+        .title(" Messages ");
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(
+            Style::default()
+                .bg(app.ui.theme.primary)
+                .fg(app.ui.theme.bg)
+                .add_modifier(Modifier::BOLD)
+        )
+        .highlight_symbol("\u{25B6} ");
+
+    f.render_stateful_widget(list, area, &mut app.ui.sidebar_state);
 }
 
-pub fn format_system_message(msg: &ChatMessage, color: Color) -> Vec<Line<'static>> {
-    if msg.content.is_empty() {
-        return vec![Line::from(Span::styled("*** ***".to_string(), Style::default().fg(color)))];
+pub(crate) fn render_status_bar(app: &App, f: &mut Frame, area: Rect) {
+    let spark_data: Vec<u64> = app.ui.sparkline_data
+        .iter()
+        .map(|v| *v as u64)
+        .collect();
+    let spark = Sparkline::default()
+        .data(&spark_data)
+        .style(Style::default().fg(app.ui.theme.primary).bg(app.ui.theme.bg));
+    let spark_area = Rect {
+        x: area.x + area.width.saturating_sub(41),
+        y: area.y,
+        width: (40).min(area.width.saturating_sub(1)),
+        height: 1,
+    };
+    let unread_str = if app.read.unread_rooms.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<String> = app.read.unread_rooms
+            .iter()
+            .filter(|r| *r != &app.current_room)
+            .map(|r| dm_display_name(r, &app.username).to_string())
+            .collect();
+        if names.is_empty() {
+            String::new()
+        } else {
+            format!(" \u{25CF}{} ", names.join(" \u{25CF}"))
+        }
+    };
+    let typing_text = {
+        let names: Vec<&str> = app.typing.typing_users
+            .iter()
+            .filter(|(_, (r, _))| r == &app.current_room || r.starts_with("__dm__"))
+            .map(|(u, _)| u.as_str())
+            .collect();
+        if names.is_empty() {
+            String::new()
+        } else if names.len() == 1 {
+            let dots = match (app.ui.pulse_tick / 10) % 4 {
+                0 => ".",
+                1 => "..",
+                2 => "...",
+                _ => "",
+            };
+            format!(" {} is typing{} ", names[0], dots)
+        } else if names.len() <= 3 {
+            format!(" {} and others are typing... ", names.join(", "))
+        } else {
+            format!(" Several people are typing... ")
+        }
+    };
+    let label = if app.audio.is_recording {
+        let elapsed = app.audio.record_start.map(|s| s.elapsed().as_secs()).unwrap_or(0);
+        let dots = match (app.ui.pulse_tick / 8) % 4 {
+            0 => ".",
+            1 => "..",
+            2 => "...",
+            _ => "",
+        };
+        format!(
+            " \u{25CF} REC{}  {:02}:{:02}  (type /record to stop)",
+            dots,
+            elapsed / 60,
+            elapsed % 60
+        )
+    } else if !typing_text.is_empty() {
+        typing_text
+    } else if !unread_str.is_empty() {
+        format!(" \u{2191}\u{2193}\u{21b5}:switch  Tab:focus {}", unread_str)
+    } else {
+        " \u{2191}\u{2193}\u{21b5}:switch  Tab:focus  /help:commands".to_string()
+    };
+    let status = if app.audio.is_recording {
+        Paragraph::new(label).style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+    } else {
+        Paragraph::new(label).style(Style::default().fg(Color::DarkGray))
+    };
+    f.render_widget(status, area);
+    if area.width >= 42 {
+        f.render_widget(spark, spark_area);
     }
-    msg.content
-        .lines()
-        .map(|line| {
-            let text = format!("*** {} ***", line);
-            Line::from(Span::styled(text, Style::default().fg(color)))
+}
+
+pub(crate) fn render_help_popup(app: &mut App, f: &mut Frame, area: Rect) {
+    let mut items: Vec<ListItem> = super::commands::HELP_COMMANDS
+        .iter()
+        .map(|(cmd, desc, _)| {
+            let line = format!("{:<18}{}", cmd, desc);
+            ListItem::new(
+                ratatui::text::Line::from(
+                    ratatui::text::Span::styled(line, Style::default().fg(app.ui.theme.primary))
+                )
+            )
         })
-        .collect()
-}
+        .collect();
 
-pub fn make_system_msg(text: &str) -> ChatMessage {
-    ChatMessage {
-        username: "system".to_string(),
-        content: text.to_string(),
-        timestamp: Local::now().format("%H:%M:%S").to_string(),
-        message_type: MessageType::SystemNotification,
-        ..Default::default()
+    let keybind_lines = [
+        ratatui::text::Line::from(""),
+        ratatui::text::Line::from(
+            vec![
+                ratatui::text::Span::styled(
+                    "Ctrl+A",
+                    Style::default().fg(app.ui.theme.accent).add_modifier(Modifier::BOLD)
+                ),
+                ratatui::text::Span::styled(
+                    " switch animation",
+                    Style::default().fg(app.ui.theme.primary)
+                )
+            ]
+        ),
+        ratatui::text::Line::from(
+            vec![
+                ratatui::text::Span::styled(
+                    "Ctrl+T",
+                    Style::default().fg(app.ui.theme.accent).add_modifier(Modifier::BOLD)
+                ),
+                ratatui::text::Span::styled(
+                    " switch theme",
+                    Style::default().fg(app.ui.theme.primary)
+                )
+            ]
+        ),
+    ];
+    for line in &keybind_lines {
+        items.push(ListItem::new(line.clone()));
     }
-}
 
-#[allow(dead_code)]
-pub fn format_image_message(
-    msg: &ChatMessage,
-    color: Color,
-    mention_color: Color
-) -> Vec<Line<'static>> {
-    let timestamp = msg.timestamp.chars().take(5).collect::<String>();
-    let ts_span = Span::styled(format!("[{}] ", timestamp), Style::default().fg(color));
-    let user_span = Span::styled(
-        format!("{} \u{25B6}", msg.username.clone()),
-        Style::default().fg(color).add_modifier(Modifier::BOLD)
-    );
-    let line1 = Line::from(vec![ts_span, user_span]);
-
-    let indent = " ".repeat(timestamp.len() + msg.username.len() + 4);
-    let img_span = Span::styled(
-        format!("{}** image **", indent),
-        Style::default().fg(mention_color).add_modifier(Modifier::BOLD)
-    );
-    let line2 = Line::from(vec![img_span]);
-
-    vec![line1, line2]
-}
-
-pub fn format_image_header(msg: &ChatMessage, color: Color) -> Vec<Line<'static>> {
-    let timestamp = msg.timestamp.chars().take(5).collect::<String>();
-    let ts_span = Span::styled(format!("[{}] ", timestamp), Style::default().fg(color));
-    let user_span = Span::styled(
-        format!("{} \u{25B6}", msg.username.clone()),
-        Style::default().fg(color).add_modifier(Modifier::BOLD)
-    );
-    vec![Line::from(vec![ts_span, user_span])]
-}
-
-pub fn format_audio_message(
-    msg: &ChatMessage,
-    color: Color,
-    is_playing: bool
-) -> Vec<Line<'static>> {
-    let timestamp = msg.timestamp.chars().take(5).collect::<String>();
-    let ts_span = Span::styled(format!("[{}] ", timestamp), Style::default().fg(color));
-    let user_span = Span::styled(
-        format!("{} \u{25B6}", msg.username.clone()),
-        Style::default().fg(color).add_modifier(Modifier::BOLD)
-    );
-
-    let icon = if is_playing {
-        "\u{23F8}" // ⏸ = playing (show pause icon)
-    } else {
-        "\u{25B6}" // ▶ = stopped (show play icon)
+    let popup_w = (44u16).min(area.width.saturating_sub(2));
+    let popup_h = (
+        (super::commands::HELP_COMMANDS.len() as u16) +
+        (keybind_lines.len() as u16) +
+        2
+    ).min(area.height.saturating_sub(2));
+    let popup_area = Rect {
+        x: area.x + area.width.saturating_sub(popup_w) / 2,
+        y: area.y + area.height.saturating_sub(popup_h) / 2,
+        width: popup_w,
+        height: popup_h,
     };
+    app.input.help_area = popup_area;
 
-    let duration_str = if msg.audio_duration_ms > 0 {
-        let total_secs = msg.audio_duration_ms / 1000;
-        let mins = total_secs / 60;
-        let secs = total_secs % 60;
-        format!(" {}  {:02}:{:02}", icon, mins, secs)
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(app.ui.theme.accent))
+        .style(Style::default().bg(app.ui.theme.bg))
+        .title(" Commands ")
+        .title_bottom(" \u{2191}\u{2193}\u{21b5} or click \u{2022} Esc to close ");
+
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(
+            Style::default()
+                .bg(app.ui.theme.primary)
+                .fg(app.ui.theme.bg)
+                .add_modifier(Modifier::BOLD)
+        )
+        .highlight_symbol("\u{25B6} ");
+
+    f.render_stateful_widget(list, popup_area, &mut app.input.help_state);
+}
+
+pub(crate) fn render_input(app: &mut App, f: &mut Frame, area: Rect) {
+    if app.input.focus == FocusPane::Input {
+        app.input.textarea.set_cursor_style(Style::default().bg(app.ui.theme.accent));
     } else {
-        format!(" {}  audio", icon)
-    };
-
-    let audio_span = Span::styled(
-        duration_str,
-        Style::default().fg(color).add_modifier(Modifier::BOLD)
+        app.input.textarea.set_cursor_style(Style::default());
+    }
+    app.input.textarea.set_block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_set(border::ROUNDED)
+            .border_style(
+                border_style(FocusPane::Input, app.input.focus, app.ui.pulse_tick, &app.ui.theme)
+            )
+            .title(" Message ")
     );
-
-    vec![Line::from(vec![ts_span, user_span, audio_span])]
+    f.render_widget(&app.input.textarea, area);
 }
 
-const EIGHTHS: [char; 9] = [' ', '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+pub(crate) fn render_messages(app: &mut App, f: &mut Frame, area: Rect) {
+    app.ui.messages_area = area;
 
-fn remap_bins(bins: &[f32], width: usize) -> Vec<f32> {
-    if bins.is_empty() || width == 0 { return Vec::new(); }
-    let n = bins.len();
-    (0..width).map(|i| {
-        let t = i as f32 / (width - 1).max(1) as f32;
-        let src = t * (n - 1) as f32;
-        let lo = src.floor() as usize;
-        let hi = (lo + 1).min(n - 1);
-        let frac = src - lo as f32;
-        bins[lo] * (1.0 - frac) + bins[hi] * frac
-    }).collect()
-}
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(
+            border_style(FocusPane::Messages, app.input.focus, app.ui.pulse_tick, &app.ui.theme)
+        )
+        .title(format!(" #{} ", dm_display_name(&app.current_room, &app.username)));
+    let content_area = block.inner(area);
+    f.render_widget(block, area);
 
-fn lerp_color(a: Color, b: Color, t: f32) -> Color {
-    if let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) {
-        let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t.clamp(0.0, 1.0)) as u8;
-        Color::Rgb(l(ar, br), l(ag, bg), l(ab, bb))
-    } else { a }
-}
+    if content_area.height == 0 || content_area.width == 0 {
+        return;
+    }
 
-pub fn format_waveform_bars(bins: &[f32], width: usize, rows: u16, center: Color, edge: Color) -> Vec<Line<'static>> {
-    if width == 0 || rows == 0 { return Vec::new(); }
-    let data = remap_bins(bins, width);
-    let total_rows = rows as usize;
-    let center_idx = (total_rows - 1) as f32 / 2.0;
-    let capacity = ((total_rows as f32 / 2.0).ceil() as i32) * 8;
+    let room_msgs: Vec<_> = app.messages_for_room(&app.current_room).cloned().collect();
+    if room_msgs.is_empty() {
+        return;
+    }
 
-    let mut grid: Vec<Vec<Span<'static>>> = (0..total_rows).map(|_| Vec::with_capacity(width)).collect();
-    for (col, &v) in data.iter().enumerate() {
-        let t = if width > 1 { (col as f32 / (width - 1) as f32 - 0.5).abs() * 2.0 } else { 0.0 };
-        let color = lerp_color(center, edge, t);
-        let extent = (v.clamp(0.0, 1.0) * capacity as f32).round() as i32;
-        for row in 0..total_rows {
-            let rank = (row as f32 - center_idx).abs().floor() as i32;
-            let filled = (extent - rank * 8).clamp(0, 8);
-            grid[row].push(Span::styled(EIGHTHS[filled as usize].to_string(), Style::default().fg(color)));
+    let content_width = content_area.width as usize;
+    let mut msg_heights: Vec<u16> = Vec::with_capacity(room_msgs.len());
+    let mut total_height = 0u16;
+    for (msg, _) in &room_msgs {
+        let h = app.message_line_height(msg, content_width as u16);
+        msg_heights.push(h);
+        total_height = total_height.saturating_add(h);
+    }
+
+    let visible_height = content_area.height;
+    let max_scroll = total_height.saturating_sub(visible_height);
+    let render_scroll = app.scroll_offset.min(max_scroll);
+
+    let vis_start = total_height.saturating_sub(render_scroll + visible_height);
+    let vis_end = total_height.saturating_sub(render_scroll);
+
+    let mut current_y = 0u16;
+    for (i, (msg, _)) in room_msgs.iter().enumerate() {
+        let h = msg_heights[i];
+        let msg_top = current_y;
+        let msg_bottom = current_y.saturating_add(h);
+
+        if msg_top >= vis_start && msg_top < vis_end {
+            let screen_y = content_area.y + (msg_top - vis_start);
+            let max_h = content_area.height.saturating_sub(screen_y - content_area.y);
+            let msg_area = Rect {
+                x: content_area.x,
+                y: screen_y,
+                width: content_area.width,
+                height: h.min(max_h),
+            };
+
+            match msg.message_type {
+                MessageType::UserMessage => {
+                    let color = if msg.username == app.username {
+                        if app.read.read_message_ids.contains(&msg.id) {
+                            app.ui.theme.success
+                        } else {
+                            app.ui.theme.primary
+                        }
+                    } else {
+                        app.ui.theme.secondary
+                    };
+                    let dot_color = (
+                        msg.username != app.username && app.online_users.contains(&msg.username)
+                    ).then(|| username_color(&msg.username));
+                    let lines = format_user_message(msg, color, app.ui.theme.accent, dot_color);
+                    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+                    f.render_widget(para, msg_area);
+                }
+                MessageType::SystemNotification => {
+                    let lines = format_system_message(msg, app.ui.theme.accent);
+                    let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+                    f.render_widget(para, msg_area);
+                }
+                MessageType::ImageMessage => {
+                    let color = if msg.username == app.username {
+                        app.ui.theme.primary
+                    } else {
+                        app.ui.theme.secondary
+                    };
+                    let header_lines = format_image_header(msg, color);
+                    let header_area = Rect { height: (1).min(msg_area.height), ..msg_area };
+                    let header_para = Paragraph::new(header_lines);
+                    f.render_widget(header_para, header_area);
+
+                    let img_area = Rect {
+                        y: msg_area.y + (1).min(msg_area.height),
+                        height: msg_area.height.saturating_sub(1),
+                        ..msg_area
+                    };
+
+                    if let Some(protocol) = app.images.image_cache.get(&msg.id) {
+                        let img_widget = RatatuiImage::new(protocol);
+                        f.render_widget(img_widget, img_area);
+                    } else {
+                        if !app.images.inflight_images.contains(&msg.id) && !msg.id.is_empty() {
+                            app.images.inflight_images.insert(msg.id.clone());
+                            super::image::spawn_image_fetch(
+                                app,
+                                msg.id.clone(),
+                                msg.thumb_url.clone()
+                            );
+                        }
+                        let placeholder = Paragraph::new(
+                            Line::from(
+                                ratatui::text::Span::styled(
+                                    "  \u{2593}\u{2593} image \u{2593}\u{2593}",
+                                    Style::default().fg(app.ui.theme.accent)
+                                )
+                            )
+                        );
+                        f.render_widget(placeholder, img_area);
+                    }
+                }
+                MessageType::AudioMessage => {
+                    let color = if msg.username == app.username {
+                        app.ui.theme.primary
+                    } else {
+                        app.ui.theme.secondary
+                    };
+                    let is_playing = app.audio.playing_audio.as_deref() == Some(&msg.id);
+                    let lines = format_audio_message(msg, color, is_playing);
+
+                    let text_area = Rect { height: (1).min(msg_area.height), ..msg_area };
+                    let para = Paragraph::new(lines);
+                    f.render_widget(para, text_area);
+
+                    if is_playing && !app.audio.live_spectrum.is_empty() {
+                        let wave_area = Rect {
+                            y: msg_area.y + 1,
+                            height: msg_area.height.saturating_sub(1),
+                            ..msg_area
+                        };
+                        if wave_area.height > 0 && wave_area.width > 0 {
+                            let bars = format_spectrum_bars(
+                                &app.audio.live_spectrum,
+                                wave_area.width as usize,
+                                wave_area.height,
+                                Color::Rgb(90, 130, 240),
+                                Color::Rgb(230, 60, 150),
+                                Color::Rgb(90, 220, 140)
+                            );
+                            f.render_widget(Paragraph::new(bars), wave_area);
+                        }
+                    } else if msg_area.height >= 2 {
+                        let idle_area = Rect {
+                            y: msg_area.y + 1,
+                            height: 1,
+                            ..msg_area
+                        };
+                        let muted = Color::Rgb(80, 80, 100);
+                        let idle_line = format_idle_waveform(&msg.id, idle_area.width as usize, muted);
+                        f.render_widget(Paragraph::new(idle_line), idle_area);
+                    }
+                }
+                _ => {}
+            }
         }
+
+        current_y = msg_bottom;
     }
-    grid.into_iter().map(Line::from).collect()
+}
+
+pub(crate) fn render_animations(app: &mut App, f: &mut Frame, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .border_style(Style::default().fg(app.ui.theme.primary));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let t = app.ui.start_time.elapsed().as_secs_f64();
+
+    let square_area = {
+        let box_w = (inner.height * 2).min(inner.width);
+        let x_off = inner.width.saturating_sub(box_w) / 2;
+        Rect {
+            x: inner.x + x_off,
+            y: inner.y,
+            width: box_w,
+            height: inner.height,
+        }
+    };
+
+    match app.ui.anim_kind {
+        AnimationKind::Cube => app.ui.cube.render(f, square_area, t),
+        AnimationKind::Torus => app.ui.torus.render(f, square_area, t),
+        AnimationKind::MatrixRain => app.ui.matrix_rain.render(f, inner, t),
+        AnimationKind::Starfield => app.ui.starfield.render(f, inner, t),
+        AnimationKind::Sand => app.ui.sand.render(f, inner, t),
+    }
 }
