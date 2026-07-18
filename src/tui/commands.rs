@@ -70,6 +70,8 @@ async fn cmd_leave(app: &mut App) {
 }
 
 async fn cmd_quit(app: &mut App) {
+    // Should stop any in-flight playback when called
+    super::audio::stop_playback(app);
     app.should_quit = true;
     let _ = app.writer.lock().await.shutdown().await;
 }

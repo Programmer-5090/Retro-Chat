@@ -1,14 +1,15 @@
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{ Duration, Instant };
 
 use tokio::io::AsyncWriteExt;
 
 use crate::ChatMessage;
-use crate::message::MessageType;
+use crate::message::{ MessageType, generate_message_id };
 use super::app::App;
 use super::format::make_system_msg;
 
-pub(crate) fn ingest_msg(app: &mut App, msg: ChatMessage, read: bool) {
+pub(crate) fn ingest_msg(app: &mut App, mut msg: ChatMessage, read: bool) {
     app.message_times.push_back(Instant::now());
     if app.message_times.len() > 200 {
         app.message_times.pop_front();
@@ -17,6 +18,13 @@ pub(crate) fn ingest_msg(app: &mut App, msg: ChatMessage, read: bool) {
     let was_unread = !read && !msg.room.is_empty() && msg.room != app.current_room;
     if was_unread {
         app.read.unread_rooms.insert(msg.room.clone());
+    }
+
+    if msg.message_type == MessageType::SystemNotification && !msg.is_history {
+        if msg.id.is_empty() {
+            msg.id = generate_message_id();
+        }
+        app.system_expiry.insert(msg.id.clone(), Instant::now() + Duration::from_secs(3));
     }
 
     app.messages.push((msg, was_unread));
@@ -36,8 +44,6 @@ pub(crate) fn clear_room_read_state(app: &mut App, room: &str) {
     app.read.unread_rooms.remove(room);
 }
 
-/// Collects all message IDs from other users in the room that have not been
-/// acknowledged yet (i.e. their ID is not in `read_message_ids`).
 pub(crate) fn collect_unread_ids(app: &App, room: &str) -> Vec<String> {
     app.messages
         .iter()
@@ -81,6 +87,75 @@ pub(crate) fn clamp_scroll(app: &mut App, visible_height: usize) {
     let total = total_content_height(app, content_width as u16);
     let max = total.saturating_sub(visible_height as u16) as u16;
     app.scroll_offset = app.scroll_offset.min(max);
+}
+
+pub(crate) fn cleanup_sys_messages(app: &mut App) {
+    let now = Instant::now();
+    let expired: Vec<String> = app.system_expiry
+        .iter()
+        .filter(|(_, exp)| now >= **exp)
+        .map(|(id, _)| id.clone())
+        .collect();
+    if expired.is_empty() {
+        return;
+    }
+    let expired_set: HashSet<String> = expired.iter().cloned().collect();
+    app.messages.retain(|(msg, _)| !expired_set.contains(&msg.id));
+    for id in &expired {
+        app.system_expiry.remove(id);
+    }
+    app.dirty = true;
+    let visible = app.ui.messages_area.height.saturating_sub(2) as usize;
+    let visible = if visible == 0 { 20 } else { visible };
+    clamp_scroll(app, visible);
+}
+
+pub(crate) fn message_id_at_row(app: &App, screen_row: u16) -> Option<String> {
+    let content_width = app.ui.messages_area.width.saturating_sub(2);
+    if content_width == 0 {
+        return None;
+    }
+
+    let content_y = app.ui.messages_area.y + 1;
+    if screen_row < content_y {
+        return None;
+    }
+    let row_offset = screen_row - content_y;
+
+    let room_msgs: Vec<_> = app.messages_for_room(&app.current_room).cloned().collect();
+    if room_msgs.is_empty() {
+        return None;
+    }
+
+    let mut msg_heights: Vec<u16> = Vec::with_capacity(room_msgs.len());
+    let mut total_height = 0u16;
+    for (msg, _) in &room_msgs {
+        let h = message_line_height(app, msg, content_width);
+        msg_heights.push(h);
+        total_height = total_height.saturating_add(h);
+    }
+
+    let visible_height = app.ui.messages_area.height.saturating_sub(2);
+    let max_scroll = total_height.saturating_sub(visible_height);
+    let render_scroll = app.scroll_offset.min(max_scroll);
+    let vis_start = total_height.saturating_sub(render_scroll + visible_height);
+
+    let mut current_y = 0u16;
+    for (i, (msg, _)) in room_msgs.iter().enumerate() {
+        let h = msg_heights[i];
+        let msg_top = current_y;
+        let msg_bottom = current_y.saturating_add(h);
+
+        if msg_top >= vis_start && msg_top < vis_start + visible_height {
+            let rel_row = msg_top - vis_start;
+            if row_offset >= rel_row && row_offset < rel_row + h {
+                return Some(msg.id.clone());
+            }
+        }
+
+        current_y = msg_bottom;
+    }
+    None
 }
 
 pub(crate) fn message_line_height(app: &App, msg: &ChatMessage, content_width: u16) -> u16 {
@@ -159,13 +234,14 @@ pub(crate) fn total_content_height(app: &App, content_width: u16) -> u16 {
 
 pub(crate) async fn handle_server_message(app: &mut App, line: &str) {
     if line == "__CONN_CLOSED__" {
+        super::audio::stop_playback(app);
         ingest_msg(app, make_system_msg("Connection closed by server"), true);
         app.should_quit = true;
         return;
     }
 
-    if line == "__PLAYBACK_DONE__" {
-        if app.audio.playing_audio.is_some() {
+    if let Some(id) = line.strip_prefix("__PLAYBACK_DONE__:") {
+        if app.audio.playing_audio.as_deref() == Some(id) {
             if let Some(flag) = app.audio.spectrum_stop.take() {
                 flag.store(true, Ordering::Relaxed);
             }
@@ -272,14 +348,13 @@ pub(crate) async fn handle_server_message(app: &mut App, line: &str) {
             MessageType::SystemNotification => {
                 let read = msg.is_history || msg.room.is_empty() || msg.room == app.current_room;
                 if !msg.is_history {
-                    match msg.content.as_str() {
-                        "Joined the chat" | "Joined the room" => {
-                            app.online_users.insert(msg.username.clone());
-                        }
-                        "Left the chat" => {
-                            app.online_users.remove(&msg.username);
-                        }
-                        _ => {}
+                    if
+                        msg.content.ends_with(" Joined the chat") ||
+                        msg.content.ends_with(" Joined the room")
+                    {
+                        app.online_users.insert(msg.username.clone());
+                    } else if msg.content.ends_with(" Left the chat") {
+                        app.online_users.remove(&msg.username);
                     }
                 }
                 ingest_msg(app, msg, read);

@@ -2,8 +2,8 @@ use std::{ env, error::Error };
 use tokio::{ io::AsyncWriteExt, net::TcpStream };
 use crossterm::terminal::disable_raw_mode;
 
-use retro_chat::client_helpers::{ ClientStream, create_tls_connector };
-use retro_chat::tui::{ run_chat_ui, run_login_ui };
+use byte_chat::client_helpers::{ ClientStream, create_tls_connector };
+use byte_chat::tui::{ run_chat_ui, run_login_ui };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {

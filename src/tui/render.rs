@@ -148,12 +148,21 @@ pub(crate) fn render_status_bar(app: &App, f: &mut Frame, area: Rect) {
             2 => "...",
             _ => "",
         };
-        format!(
-            " \u{25CF} REC{}  {:02}:{:02}  (type /record to stop)",
-            dots,
-            elapsed / 60,
-            elapsed % 60
-        )
+        if app.audio.push_to_talk_active {
+            format!(
+                " \u{25CF} PTT{}  {:02}:{:02}  (release ` to stop)",
+                dots,
+                elapsed / 60,
+                elapsed % 60
+            )
+        } else {
+            format!(
+                " \u{25CF} REC{}  {:02}:{:02}  (type /record to stop)",
+                dots,
+                elapsed / 60,
+                elapsed % 60
+            )
+        }
     } else if !typing_text.is_empty() {
         typing_text
     } else if !unread_str.is_empty() {
@@ -425,7 +434,11 @@ pub(crate) fn render_messages(app: &mut App, f: &mut Frame, area: Rect) {
                             ..msg_area
                         };
                         let muted = Color::Rgb(80, 80, 100);
-                        let idle_line = format_idle_waveform(&msg.id, idle_area.width as usize, muted);
+                        let idle_line = format_idle_waveform(
+                            &msg.id,
+                            idle_area.width as usize,
+                            muted
+                        );
                         f.render_widget(Paragraph::new(idle_line), idle_area);
                     }
                 }

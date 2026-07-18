@@ -3,7 +3,7 @@ use tokio::net::TcpListener;
 use chrono::Local;
 use redis::Commands;
 
-use retro_chat::{ AppState, handle_connection, load_tls_config, UploadState, upload_router };
+use byte_chat::{ AppState, handle_connection, load_tls_config, UploadState, upload_router };
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -31,7 +31,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let state = AppState::new(pool.clone(), redis_client.clone());
 
-    let upload_bind = std::env::var("UPLOAD_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8083".to_string());
+    let upload_bind = std::env
+        ::var("UPLOAD_BIND_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:8083".to_string());
     let upload_state = UploadState {
         pool,
         redis_client: redis_client.clone(),

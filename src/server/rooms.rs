@@ -1,7 +1,7 @@
 use tokio::{ io::AsyncWrite, sync::mpsc };
 use chrono::Local;
 
-use crate::{ ChatMessage, MessageType, dm_display_name, generate_message_id, AppState };
+use crate::{ ChatMessage, MessageType, dm_display_name, AppState };
 
 use super::send_notice;
 
@@ -49,9 +49,10 @@ pub(super) async fn replay_history(
                 Option<i32>,
                 Option<String>,
                 Option<i32>,
+                String,
             )
         >(
-            "SELECT username, content, created_at, message_type, image_url, thumb_url, width, height, audio_url, audio_duration_ms FROM messages WHERE room_id = $1 ORDER BY created_at DESC LIMIT 50"
+            "SELECT username, content, created_at, message_type, image_url, thumb_url, width, height, audio_url, audio_duration_ms, message_id FROM messages WHERE room_id = $1 ORDER BY created_at DESC LIMIT 50"
         )
         .bind(room_id)
         .fetch_all(&state.pool).await
@@ -59,7 +60,7 @@ pub(super) async fn replay_history(
 
     for row in rows.into_iter().rev() {
         let msg = ChatMessage {
-            id: generate_message_id(),
+            id: row.10,
             username: row.0,
             content: row.1,
             timestamp: row.2.format("%H:%M:%S").to_string(),
@@ -117,7 +118,7 @@ pub(super) async fn handle_join_command(
         let join_notice = ChatMessage {
             id: String::new(),
             username: username.to_string(),
-            content: "Joined the room".to_string(),
+            content: format!("{} Joined the room", username).to_string(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             message_type: MessageType::SystemNotification,
             room: room_name.to_string(),
@@ -146,7 +147,7 @@ pub(super) async fn handle_leave_command(
     let leave_notice = ChatMessage {
         id: String::new(),
         username: username.to_string(),
-        content: "Left the room".to_string(),
+        content: format!("{} Left the room", username).to_string(),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::SystemNotification,
         room: current_room.clone(),

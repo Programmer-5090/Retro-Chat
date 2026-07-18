@@ -58,7 +58,7 @@ impl AppState {
     }
 
     /// Convenience used at initial connect / new-room creation. subscribes
-    /// to `room` for live delivery AND makes it the active room in one call.
+    /// to `room` for live delivery and makes it the active room in one call.
     pub async fn join_room(&self, username: &str, room: &str, tx: mpsc::UnboundedSender<String>) {
         self.subscribe_room(username, room, tx).await;
         self.set_active_room(username, room).await;

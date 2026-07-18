@@ -36,179 +36,136 @@ fn decode_mono_samples(bytes: &[u8]) -> Option<(Vec<f32>, u32)> {
     Some((mono, sample_rate))
 }
 
-pub(crate) fn toggle_play_audio(app: &mut App) {
-    if let Some(ref _playing_id) = app.audio.playing_audio.clone() {
-        if let Some(flag) = app.audio.spectrum_stop.take() {
-            flag.store(true, Ordering::Relaxed);
-        }
-        app.audio.live_spectrum.clear();
-        app.audio.playing_audio = None;
-        app.ingest_msg(make_system_msg("Stopped playback."), true);
-        return;
-    }
-
-    let audio_msg = app
-        .messages_for_room(&app.current_room)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .find(
-            |(msg, _)|
-                msg.message_type == MessageType::AudioMessage && !msg.audio_note_url.is_empty()
-        )
-        .map(|(msg, _)| msg.clone());
-
-    if let Some(msg) = audio_msg {
-        let msg_id = msg.id.clone();
-        let audio_url = msg.audio_note_url.clone();
-        let upload_base = std::env
-            ::var("UPLOAD_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8083".to_string());
-        let full_url = format!("{}{}", upload_base, audio_url);
-        let err_tx = app.server_tx.clone();
-        let playing_id = msg_id.clone();
-
-        app.audio.playing_audio = Some(playing_id.clone());
-        app.ingest_msg(make_system_msg("Playing audio..."), true);
-
-        let outer_stop_flag = Arc::new(AtomicBool::new(false));
-        app.audio.spectrum_stop = Some(outer_stop_flag.clone());
-        let outer_spectrum_tx = app.audio.spectrum_tx.clone();
-        let outer_ticker_id = playing_id.clone();
-
-        tokio::spawn(async move {
-            match reqwest::get(&full_url).await {
-                Ok(resp) => {
-                    match resp.bytes().await {
-                        Ok(bytes) => {
-                            let audio_bytes = bytes.to_vec();
-
-                            let ticker_id = outer_ticker_id;
-                            let spectrum_tx = outer_spectrum_tx;
-                            let stop_flag = outer_stop_flag;
-
-                            if let Some((mono_samples, sample_rate)) = decode_mono_samples(&audio_bytes) {
-                                tokio::spawn(async move {
-                                    let mut spectrum = SpectrumState::default();
-                                    let start = Instant::now();
-                                    let total_samples = mono_samples.len();
-                                    loop {
-                                        if stop_flag.load(Ordering::Relaxed) {
-                                            break;
-                                        }
-                                        let elapsed = start.elapsed().as_secs_f32();
-                                        let pos = ((elapsed * (sample_rate as f32)) as usize).min(total_samples);
-                                        if pos >= total_samples {
-                                            break;
-                                        }
-                                        let window_start = pos.saturating_sub(TAP_BUFFER_CAPACITY);
-                                        let window = &mono_samples[window_start..pos];
-                                        if window.len() >= 64 {
-                                            spectrum.update(window, sample_rate);
-                                            if spectrum_tx.send((ticker_id.clone(), spectrum.bins().to_vec())).is_err() {
-                                                break;
-                                            }
-                                        }
-                                        tokio::time::sleep(std::time::Duration::from_millis(33)).await;
-                                    }
-                                });
-                            }
-
-                            let err_tx_for_play = err_tx.clone();
-                            let result = tokio::task::spawn_blocking(move || {
-                                let cursor = std::io::Cursor::new(audio_bytes);
-                                let mut handle = match
-                                    rodio::DeviceSinkBuilder::open_default_sink()
-                                {
-                                    Ok(h) => h,
-                                    Err(e) => {
-                                        let _ = err_tx_for_play.send(
-                                            format!("Audio device error: {}", e)
-                                        );
-                                        return;
-                                    }
-                                };
-                                handle.log_on_drop(false);
-                                let mixer = handle.mixer();
-
-                                let player = match rodio::play(mixer, cursor) {
-                                    Ok(p) => p,
-                                    Err(e) => {
-                                        let _ = err_tx_for_play.send(
-                                            format!("Audio play error: {}", e)
-                                        );
-                                        return;
-                                    }
-                                };
-                                player.set_volume(0.5);
-
-                                while !player.empty() {
-                                    std::thread::sleep(std::time::Duration::from_millis(100));
-                                }
-                                drop(player);
-                                drop(handle);
-                                let _ = err_tx_for_play.send("__PLAYBACK_DONE__".to_string());
-                            }).await;
-                            if let Err(join_err) = &result {
-                                let _ = err_tx.send(
-                                    format!("Audio playback panicked: {}", join_err)
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            let _ = err_tx.send(format!("Audio download error: {}", e));
-                        }
-                    }
-                }
-                Err(e) => {
-                    let _ = err_tx.send(format!("Audio fetch error: {}", e));
-                }
-            }
-        });
-    }
-}
-
-pub(crate) async fn do_audio_upload(
-    path: &str,
-    token: &str
-) -> Result<AudioUploadResponse, String> {
-    let bytes = tokio::fs::read(path).await.map_err(|e| format!("cannot read file: {}", e))?;
-
-    let file_name = std::path::Path
-        ::new(path)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "upload.wav".to_string());
-
-    let part = reqwest::multipart::Part
-        ::bytes(bytes)
-        .file_name(file_name)
-        .mime_str("application/octet-stream")
-        .map_err(|e| e.to_string())?;
-
-    let form = reqwest::multipart::Form::new().text("token", token.to_string()).part("file", part);
-
+fn start_playback(app: &mut App, msg: &crate::ChatMessage) {
+    let msg_id = msg.id.clone();
+    let audio_url = msg.audio_note_url.clone();
     let upload_base = std::env
         ::var("UPLOAD_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8083".to_string());
+    let full_url = format!("{}{}", upload_base, audio_url);
+    let err_tx = app.server_tx.clone();
+    let playing_id = msg_id.clone();
 
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!("{}/upload/audio?token={}", upload_base, token))
-        .multipart(form)
-        .send().await
-        .map_err(|e| format!("upload request failed: {}", e))?;
+    app.audio.playing_audio = Some(playing_id.clone());
+    app.ingest_msg(make_system_msg("Playing audio..."), true);
 
-    let status = resp.status();
-    let body = resp.text().await.map_err(|e| format!("failed to read response: {}", e))?;
+    // Shared stop flag
+    let outer_stop_flag = Arc::new(AtomicBool::new(false));
+    app.audio.spectrum_stop = Some(outer_stop_flag.clone());
+    let outer_spectrum_tx = app.audio.spectrum_tx.clone();
+    let outer_ticker_id = playing_id.clone();
 
-    if !status.is_success() {
-        return Err(format!("upload failed ({}): {}", status, body));
+    tokio::spawn(async move {
+        match reqwest::get(&full_url).await {
+            Ok(resp) => {
+                match resp.bytes().await {
+                    Ok(bytes) => {
+                        let audio_bytes = bytes.to_vec();
+
+                        let ticker_id = outer_ticker_id;
+                        let spectrum_tx = outer_spectrum_tx;
+                        // Separate clone for the spectrum thread
+                        let stop_flag = outer_stop_flag.clone();
+                        let playback_stop_flag = outer_stop_flag;
+
+                        if
+                            let Some((mono_samples, sample_rate)) = decode_mono_samples(
+                                &audio_bytes
+                            )
+                        {
+                            tokio::spawn(async move {
+                                let mut spectrum = SpectrumState::default();
+                                let start = Instant::now();
+                                let total_samples = mono_samples.len();
+                                loop {
+                                    if stop_flag.load(Ordering::Relaxed) {
+                                        break;
+                                    }
+                                    let elapsed = start.elapsed().as_secs_f32();
+                                    let pos = ((elapsed * (sample_rate as f32)) as usize).min(
+                                        total_samples
+                                    );
+                                    if pos >= total_samples {
+                                        break;
+                                    }
+                                    let window_start = pos.saturating_sub(TAP_BUFFER_CAPACITY);
+                                    let window = &mono_samples[window_start..pos];
+                                    if window.len() >= 64 {
+                                        spectrum.update(window, sample_rate);
+                                        if
+                                            spectrum_tx
+                                                .send((ticker_id.clone(), spectrum.bins().to_vec()))
+                                                .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    tokio::time::sleep(std::time::Duration::from_millis(33)).await;
+                                }
+                            });
+                        }
+
+                        let err_tx_for_play = err_tx.clone();
+                        let playing_id_for_done = playing_id.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            let cursor = std::io::Cursor::new(audio_bytes);
+                            let mut handle = match rodio::DeviceSinkBuilder::open_default_sink() {
+                                Ok(h) => h,
+                                Err(e) => {
+                                    let _ = err_tx_for_play.send(
+                                        format!("Audio device error: {}", e)
+                                    );
+                                    return;
+                                }
+                            };
+                            handle.log_on_drop(false);
+                            let mixer = handle.mixer();
+
+                            let player = match rodio::play(mixer, cursor) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    let _ = err_tx_for_play.send(
+                                        format!("Audio play error: {}", e)
+                                    );
+                                    return;
+                                }
+                            };
+                            player.set_volume(0.5);
+
+                            while !player.empty() {
+                                if playback_stop_flag.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                            drop(player);
+                            drop(handle);
+                            let _ = err_tx_for_play.send(
+                                format!("__PLAYBACK_DONE__:{}", playing_id_for_done)
+                            );
+                        }).await;
+                        if let Err(join_err) = &result {
+                            let _ = err_tx.send(format!("Audio playback panicked: {}", join_err));
+                        }
+                    }
+                    Err(e) => {
+                        let _ = err_tx.send(format!("Audio download error: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = err_tx.send(format!("Audio fetch error: {}", e));
+            }
+        }
+    });
+}
+
+pub(crate) fn stop_playback(app: &mut App) {
+    if let Some(flag) = app.audio.spectrum_stop.take() {
+        flag.store(true, Ordering::Relaxed);
     }
-
-    serde_json
-        ::from_str::<AudioUploadResponse>(&body)
-        .map_err(|e| format!("invalid response: {}", e))
+    app.audio.live_spectrum.clear();
+    app.audio.playing_audio = None;
 }
 
 pub(crate) fn start_recording(app: &mut App) {
@@ -304,7 +261,11 @@ pub(crate) fn start_recording(app: &mut App) {
     app.audio.record_channels = Some(channels_nz);
     app.audio.record_sample_rate = Some(sample_rate_nz);
 
-    app.ingest_msg(make_system_msg("Recording audio... (type /record again to stop)"), true);
+    if app.audio.push_to_talk_active {
+        app.ingest_msg(make_system_msg("Recording audio... (release ` to stop)"), true);
+    } else {
+        app.ingest_msg(make_system_msg("Recording audio... (type /record again to stop)"), true);
+    }
 }
 
 pub(crate) fn stop_recording(app: &mut App) {
@@ -387,4 +348,95 @@ pub(crate) fn stop_recording(app: &mut App) {
             }
         }
     });
+}
+
+pub(crate) fn toggle_play_message(app: &mut App, msg_id: &str) {
+    if app.audio.playing_audio.as_deref() == Some(msg_id) {
+        stop_playback(app);
+        app.ingest_msg(make_system_msg("Stopped playback."), true);
+        return;
+    }
+
+    let audio_msg = app
+        .messages_for_room(&app.current_room)
+        .find(
+            |(msg, _)|
+                msg.id == msg_id &&
+                msg.message_type == MessageType::AudioMessage &&
+                !msg.audio_note_url.is_empty()
+        )
+        .map(|(msg, _)| msg.clone());
+
+    if let Some(msg) = audio_msg {
+        if app.audio.playing_audio.is_some() {
+            stop_playback(app);
+        }
+        start_playback(app, &msg);
+    }
+}
+
+pub(crate) fn toggle_play_audio(app: &mut App) {
+    if app.audio.playing_audio.is_some() {
+        stop_playback(app);
+        app.ingest_msg(make_system_msg("Stopped playback."), true);
+        return;
+    }
+
+    let audio_msg = app
+        .messages_for_room(&app.current_room)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .find(
+            |(msg, _)|
+                msg.message_type == MessageType::AudioMessage && !msg.audio_note_url.is_empty()
+        )
+        .map(|(msg, _)| msg.clone());
+
+    if let Some(msg) = audio_msg {
+        start_playback(app, &msg);
+    }
+}
+
+pub(crate) async fn do_audio_upload(
+    path: &str,
+    token: &str
+) -> Result<AudioUploadResponse, String> {
+    let bytes = tokio::fs::read(path).await.map_err(|e| format!("cannot read file: {}", e))?;
+
+    let file_name = std::path::Path
+        ::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "upload.wav".to_string());
+
+    let part = reqwest::multipart::Part
+        ::bytes(bytes)
+        .file_name(file_name)
+        .mime_str("application/octet-stream")
+        .map_err(|e| e.to_string())?;
+
+    let form = reqwest::multipart::Form::new().part("file", part);
+
+    let upload_base = std::env
+        ::var("UPLOAD_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8083".to_string());
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/upload/audio?token={}", upload_base, token))
+        .multipart(form)
+        .send().await
+        .map_err(|e| format!("upload request failed: {}", e))?;
+
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| format!("failed to read response: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!("upload failed ({}): {}", status, body));
+    }
+
+    serde_json
+        ::from_str::<AudioUploadResponse>(&body)
+        .map_err(|e| format!("invalid response: {}", e))
 }

@@ -80,7 +80,7 @@ pub fn build_room_notice(text: &str, room: &str) -> String {
 /// Returns a display-friendly name for a room. DM rooms like
 /// `__dm__alice_bob` are shown as the "other" user's name from `username`'s
 /// perspective (e.g. "bob" for alice, "alice" for bob). Non-DM rooms are
-/// returned as-is.
+/// remain the same
 pub fn dm_display_name<'a>(room: &'a str, username: &str) -> &'a str {
     if let Some(rest) = room.strip_prefix("__dm__") {
         let mut parts: Vec<&str> = rest.split('_').collect();

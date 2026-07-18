@@ -1,8 +1,6 @@
 use std::time::Instant;
 
-use crossterm::event::{
-    self, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{ self, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind };
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use tokio::io::AsyncWriteExt;
@@ -20,6 +18,7 @@ pub(crate) async fn handle_key(app: &mut App, key: event::KeyEvent) {
 
     match key.code {
         KeyCode::Esc => {
+            super::audio::stop_playback(app);
             app.should_quit = true;
             return;
         }
@@ -43,7 +42,9 @@ pub(crate) async fn handle_key(app: &mut App, key: event::KeyEvent) {
             app.ui.starfield.color = app.ui.theme.secondary;
             app.ui.torus.color = app.ui.theme.secondary;
             app.ui.sand.color = app.ui.theme.secondary;
-            app.input.textarea.set_style(Style::default().fg(app.ui.theme.primary).bg(app.ui.theme.bg));
+            app.input.textarea.set_style(
+                Style::default().fg(app.ui.theme.primary).bg(app.ui.theme.bg)
+            );
             app.input.textarea.set_cursor_style(Style::default().bg(app.ui.theme.primary));
             return;
         }
@@ -97,6 +98,10 @@ pub(crate) async fn handle_key(app: &mut App, key: event::KeyEvent) {
                 KeyCode::Enter | KeyCode::Char('p') => {
                     super::audio::toggle_play_audio(app);
                 }
+                KeyCode::Char('`') if !app.audio.is_recording && !app.audio.push_to_talk_active => {
+                    app.audio.push_to_talk_active = true;
+                    super::audio::start_recording(app);
+                }
                 _ => {}
             }
         FocusPane::Sidebar => {
@@ -115,9 +120,20 @@ pub(crate) async fn handle_key(app: &mut App, key: event::KeyEvent) {
                         select_room(app, i).await;
                     }
                 }
+                KeyCode::Char('`') if !app.audio.is_recording && !app.audio.push_to_talk_active => {
+                    app.audio.push_to_talk_active = true;
+                    super::audio::start_recording(app);
+                }
                 _ => {}
             }
         }
+    }
+}
+
+pub(crate) async fn handle_key_release(app: &mut App, key: KeyEvent) {
+    if key.code == KeyCode::Char('`') && app.audio.push_to_talk_active {
+        app.audio.push_to_talk_active = false;
+        super::audio::stop_recording(app);
     }
 }
 
@@ -179,6 +195,13 @@ pub(crate) async fn handle_mouse(app: &mut App, mouse: MouseEvent) {
                 }
             } else if rect_contains(app.ui.messages_area, mouse.column, mouse.row) {
                 app.input.focus = FocusPane::Messages;
+                if let Some(msg_id) = super::server_msg::message_id_at_row(app, mouse.row) {
+                    if let Some((msg, _)) = app.messages.iter().find(|(m, _)| m.id == msg_id) {
+                        if msg.message_type == crate::message::MessageType::AudioMessage {
+                            super::audio::toggle_play_message(app, &msg_id);
+                        }
+                    }
+                }
             } else if rect_contains(app.ui.input_area, mouse.column, mouse.row) {
                 app.input.focus = FocusPane::Input;
             }

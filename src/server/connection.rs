@@ -45,7 +45,7 @@ async fn cleanup_disconnect(state: &AppState, redis_conn: &mut redis::Connection
         let leave_msg = ChatMessage {
             id: String::new(),
             username: username.to_string(),
-            content: "Left the chat".to_string(),
+            content: format!("{} Left the chat", username).to_string(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             message_type: MessageType::SystemNotification,
             room: room.clone(),
@@ -66,8 +66,7 @@ async fn dispatch_command(
     redis_conn: &mut redis::Connection,
     username: &str,
     user_role: &str,
-    out_tx: &mpsc::UnboundedSender<String>,
-    current_room: &str
+    out_tx: &mpsc::UnboundedSender<String>
 ) {
     if let Some(args) = input.strip_prefix("/join ") {
         handle_join_command(state, writer, username, out_tx, args).await;
@@ -95,9 +94,9 @@ async fn dispatch_command(
     } else if input.starts_with("/typing") {
         handle_typing(state, redis_conn, username, out_tx, input).await;
     } else if let Some(args) = input.strip_prefix("/image ") {
-        handle_image_command(state, writer, username, current_room, args).await;
+        handle_image_command(state, writer, username, args).await;
     } else if let Some(args) = input.strip_prefix("/audio ") {
-        handle_audio_command(state, writer, username, current_room, args).await;
+        handle_audio_command(state, writer, username, args).await;
     } else if let Some(args) = input.strip_prefix("/switch ") {
         handle_switch_command(state, username, args).await;
     } else if input == "/help" {
@@ -198,7 +197,7 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
     let join_msg = ChatMessage {
         id: String::new(),
         username: username.clone(),
-        content: "Joined the chat".to_string(),
+        content: format!("{} Joined the chat", username).to_string(),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
         message_type: MessageType::SystemNotification,
         room: current_room.clone(),
@@ -250,7 +249,6 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
     let mut presence_heartbeat = interval(Duration::from_secs(10));
     presence_heartbeat.tick().await;
 
-    let current_room = current_room;
     let mut line = String::new();
     loop {
         tokio::select! {
@@ -277,8 +275,7 @@ pub async fn handle_connection<S>(stream: S, _addr: SocketAddr, state: Arc<AppSt
                         &mut redis_conn,
                         &username,
                         &user_role,
-                        &out_tx,
-                        &current_room,
+                        &out_tx
                     ).await;
                     line.clear();
                     continue;

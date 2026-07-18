@@ -38,10 +38,6 @@ impl Drop for CleanGuard {
     }
 }
 
-/// Shows the ByteChat splash screen with a typewriter reveal, then collects
-/// the account password (register or login, per the server's first message)
-/// inside the same terminal UI. Returns the reader/writer once the server
-/// confirms auth with a session token, ready to give to run_chat_ui.
 pub async fn run_login_ui(
     mut reader: BufReader<tokio::io::ReadHalf<ClientStream>>,
     mut writer: tokio::io::WriteHalf<ClientStream>
@@ -140,8 +136,8 @@ pub async fn run_login_ui(
     Ok((reader, writer, token))
 }
 
-/// Reveals the ByteChat logo a couple of characters at a time. Any keypress
-/// skips straight to the full logo (and the short pause that follows).
+/// Reveals the byte_chat logo a couple of characters at a time. Any keypress
+/// skips straight to the full logo (and the short pause after that)
 fn run_splash(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -155,7 +151,6 @@ fn run_splash(
         if event::poll(Duration::from_millis(8))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    revealed_lines = lines.len();
                     break;
                 }
             }
@@ -263,7 +258,7 @@ fn draw_password_screen(f: &mut Frame, prompt: &str, password: &str, status: Opt
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
         .border_style(amber)
-        .title(" ByteChat Login ");
+        .title(" byte_chat Login ");
     let inner = block.inner(hmid);
     f.render_widget(block, hmid);
 

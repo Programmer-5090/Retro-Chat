@@ -5,7 +5,7 @@ use ratatui::{ style::{ Color, Modifier, Style }, text::{ Line, Span } };
 use chrono::Local;
 
 use crate::ChatMessage;
-use crate::message::MessageType;
+use crate::message::{ MessageType, generate_message_id };
 use super::types::{ FocusPane, Theme };
 
 pub fn border_style(pane: FocusPane, focus: FocusPane, pulse_tick: u64, theme: &Theme) -> Style {
@@ -218,9 +218,9 @@ pub fn format_audio_message(
     vec![Line::from(vec![ts_span, user_span, audio_span])]
 }
 
-
 pub fn make_system_msg(text: &str) -> ChatMessage {
     ChatMessage {
+        id: generate_message_id(),
         username: "system".to_string(),
         content: text.to_string(),
         timestamp: Local::now().format("%H:%M:%S").to_string(),
@@ -256,7 +256,9 @@ pub fn format_spectrum_bars(
     let total_rows = rows as usize;
     let capacity = (total_rows as i32) * 8;
 
-    let mut grid: Vec<Vec<Span<'static>>> = (0..total_rows).map(|_| Vec::with_capacity(width)).collect();
+    let mut grid: Vec<Vec<Span<'static>>> = (0..total_rows)
+        .map(|_| Vec::with_capacity(width))
+        .collect();
     for (col, &v) in data.iter().enumerate() {
         let t = if width > 1 { (col as f32) / ((width - 1) as f32) } else { 0.0 };
         let color = lerp_color3(left, mid, right, t);
@@ -264,7 +266,9 @@ pub fn format_spectrum_bars(
         for row in 0..total_rows {
             let dist_from_bottom = (total_rows - 1 - row) as i32;
             let filled = (extent - dist_from_bottom * 8).clamp(0, 8);
-            grid[row].push(Span::styled(BRAILLE_FILL[filled as usize].to_string(), Style::default().fg(color)));
+            grid[row].push(
+                Span::styled(BRAILLE_FILL[filled as usize].to_string(), Style::default().fg(color))
+            );
         }
     }
     grid.into_iter().map(Line::from).collect()
@@ -280,8 +284,8 @@ pub fn format_idle_waveform(msg_id: &str, width: usize, color: Color) -> Line<'s
 
     let spans: Vec<Span<'static>> = (0..width)
         .map(|i| {
-            let phase = ((seed % 1000) as f32) / 1000.0 * std::f32::consts::TAU;
-            let x = (i as f32) / (width as f32) * std::f32::consts::TAU * 2.0;
+            let phase = (((seed % 1000) as f32) / 1000.0) * std::f32::consts::TAU;
+            let x = ((i as f32) / (width as f32)) * std::f32::consts::TAU * 2.0;
             let v = ((x + phase).sin() * 0.5 + (x * 2.3 + phase).sin() * 0.3 + 0.6).clamp(0.0, 1.0);
             let level = (v * 8.0).round() as usize;
             Span::styled(BRAILLE_FILL[level.min(8)].to_string(), Style::default().fg(color))

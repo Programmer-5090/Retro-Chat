@@ -75,7 +75,7 @@ pub(crate) async fn do_image_upload(
         .mime_str("application/octet-stream")
         .map_err(|e| e.to_string())?;
 
-    let form = reqwest::multipart::Form::new().text("token", token.to_string()).part("file", part);
+    let form = reqwest::multipart::Form::new().part("file", part);
 
     let upload_base = std::env
         ::var("UPLOAD_URL")

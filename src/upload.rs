@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use axum::{
     Router,
-    extract::{ Multipart, Path, Query, State },
+    extract::{ DefaultBodyLimit, Multipart, Path, Query, State },
     http::{ HeaderMap, StatusCode, header },
     response::IntoResponse,
     routing::{ get, post },
@@ -23,7 +23,7 @@ pub struct UploadState {
 }
 
 #[derive(Serialize)]
-pub struct UploadResponse {
+pub struct ImageUploadResponse {
     pub url: String,
     pub thumb_url: String,
     pub width: u32,
@@ -97,7 +97,7 @@ async fn handle_upload(
     State(state): State<UploadState>,
     Query(params): Query<HashMap<String, String>>,
     mut multipart: Multipart
-) -> Result<Json<UploadResponse>, (StatusCode, String)> {
+) -> Result<Json<ImageUploadResponse>, (StatusCode, String)> {
     let token = params.get("token").ok_or((StatusCode::UNAUTHORIZED, "missing token".to_string()))?;
     let _username = verify_token(&state.redis_client, token).await.ok_or((
         StatusCode::UNAUTHORIZED,
@@ -108,18 +108,21 @@ async fn handle_upload(
     let mut original_name: Option<String> = None;
 
     while
-        let Some(field) = multipart
+        let Some(mut field) = multipart
             .next_field().await
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
     {
         let name = field.name().unwrap_or_default().to_string();
         if name == "file" {
             original_name = field.file_name().map(|s| s.to_string());
-            let data = field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-            if data.len() > 32 * 1024 * 1024 {
-                return Err((StatusCode::PAYLOAD_TOO_LARGE, "file exceeds 32 MB limit".to_string()));
+            let mut data = Vec::new();
+            while let Some(chunk) = field.chunk().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
+                data.extend_from_slice(&chunk);
+                if data.len() > 32 * 1024 * 1024 {
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, "file exceeds 32 MB limit".to_string()));
+                }
             }
-            file_bytes = Some(data.to_vec());
+            file_bytes = Some(data);
         }
     }
 
@@ -188,7 +191,7 @@ async fn handle_upload(
     let attachment_id: i32 = row.get("id");
 
     Ok(
-        Json(UploadResponse {
+        Json(ImageUploadResponse {
             url: format!("/attachments/{}", attachment_id),
             thumb_url: format!("/attachments/{}/thumb", attachment_id),
             width: dims.0,
@@ -212,18 +215,21 @@ async fn handle_audio_upload(
     let mut original_name: Option<String> = None;
 
     while
-        let Some(field) = multipart
+        let Some(mut field) = multipart
             .next_field().await
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
     {
         let name = field.name().unwrap_or_default().to_string();
         if name == "file" {
             original_name = field.file_name().map(|s| s.to_string());
-            let data = field.bytes().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-            if data.len() > 50 * 1024 * 1024 {
-                return Err((StatusCode::PAYLOAD_TOO_LARGE, "file exceeds 50 MB limit".to_string()));
+            let mut data = Vec::new();
+            while let Some(chunk) = field.chunk().await.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))? {
+                data.extend_from_slice(&chunk);
+                if data.len() > 50 * 1024 * 1024 {
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE, "file exceeds 50 MB limit".to_string()));
+                }
             }
-            file_bytes = Some(data.to_vec());
+            file_bytes = Some(data);
         }
     }
 
@@ -341,4 +347,5 @@ pub fn router(state: UploadState) -> Router {
         .route("/attachments/{id}", get(get_attachment))
         .route("/attachments/{id}/thumb", get(get_attachment_thumb))
         .with_state(state)
+        .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
 }

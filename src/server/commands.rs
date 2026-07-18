@@ -66,12 +66,13 @@ pub(super) async fn handle_msg_command(
     let dm_json = serde_json::to_string(&dm_msg).unwrap();
 
     sqlx::query(
-        "INSERT INTO messages (username, content, message_type, room_id) VALUES ($1, $2, $3, $4)"
+        "INSERT INTO messages (username, content, message_type, room_id, message_id) VALUES ($1, $2, $3, $4, $5)"
     )
         .bind(&dm_msg.username)
         .bind(&dm_msg.content)
         .bind(dm_msg.message_type.to_string())
         .bind(room_id)
+        .bind(&dm_msg.id)
         .execute(&state.pool).await
         .unwrap();
 

@@ -62,12 +62,13 @@ pub(super) async fn handle_regular_message(
     state.send_to_room(&user_room, &json).await;
 
     sqlx::query(
-        "INSERT INTO messages (username, content, message_type, room_id) VALUES ($1, $2, $3, $4)"
+        "INSERT INTO messages (username, content, message_type, room_id, message_id) VALUES ($1, $2, $3, $4, $5)"
     )
         .bind(&msg.username)
         .bind(&msg.content)
         .bind(msg.message_type.to_string())
         .bind(room_id)
+        .bind(&msg.id)
         .execute(&state.pool).await
         .unwrap();
 }
@@ -111,11 +112,11 @@ pub(super) async fn handle_image_command(
     state: &AppState,
     writer: &mut (impl AsyncWrite + Unpin),
     username: &str,
-    current_room: &str,
     args: &str
 ) {
     let parts: Vec<&str> = args.splitn(4, ' ').collect();
     if parts.len() >= 2 {
+        let current_room = state.get_user_room(username).await;
         let image_url = parts[0].to_string();
         let thumb_url = parts[1].to_string();
         let width: u32 = parts
@@ -132,7 +133,7 @@ pub(super) async fn handle_image_command(
             content: String::new(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             message_type: MessageType::ImageMessage,
-            room: current_room.to_string(),
+            room: current_room.clone(),
             image_url,
             thumb_url,
             width,
@@ -140,9 +141,9 @@ pub(super) async fn handle_image_command(
             ..Default::default()
         };
         let image_json = serde_json::to_string(&image_msg).unwrap();
-        let room_id = state.get_or_create_db_room(current_room, username).await;
+        let room_id = state.get_or_create_db_room(&current_room, username).await;
         sqlx::query(
-            "INSERT INTO messages (room_id, username, content, message_type, image_url, thumb_url, width, height) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            "INSERT INTO messages (room_id, username, content, message_type, image_url, thumb_url, width, height, message_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
         )
             .bind(room_id)
             .bind(username)
@@ -152,9 +153,10 @@ pub(super) async fn handle_image_command(
             .bind(&image_msg.thumb_url)
             .bind(image_msg.width as i32)
             .bind(image_msg.height as i32)
+            .bind(&image_msg.id)
             .execute(&state.pool).await
             .ok();
-        state.send_to_room(current_room, &image_json).await;
+        state.send_to_room(&current_room, &image_json).await;
     } else {
         send_notice(writer, "Usage: /image <url> <thumb_url> [width] [height]").await;
     }
@@ -164,11 +166,11 @@ pub(super) async fn handle_audio_command(
     state: &AppState,
     writer: &mut (impl AsyncWrite + Unpin),
     username: &str,
-    current_room: &str,
     args: &str
 ) {
     let parts: Vec<&str> = args.splitn(2, ' ').collect();
     if parts.len() >= 2 {
+        let current_room = state.get_user_room(username).await;
         let audio_url = parts[0].to_string();
         let duration_ms: u32 = parts[1].trim().parse().unwrap_or(0);
         let audio_msg = ChatMessage {
@@ -177,7 +179,7 @@ pub(super) async fn handle_audio_command(
             content: String::new(),
             timestamp: Local::now().format("%H:%M:%S").to_string(),
             message_type: MessageType::AudioMessage,
-            room: current_room.to_string(),
+            room: current_room.clone(),
             is_history: false,
             image_url: String::new(),
             thumb_url: String::new(),
@@ -188,9 +190,9 @@ pub(super) async fn handle_audio_command(
             audio_duration_ms: duration_ms,
         };
         let audio_json = serde_json::to_string(&audio_msg).unwrap();
-        let room_id = state.get_or_create_db_room(current_room, username).await;
+        let room_id = state.get_or_create_db_room(&current_room, username).await;
         sqlx::query(
-            "INSERT INTO messages (room_id, username, content, message_type, audio_url, audio_duration_ms) VALUES ($1, $2, $3, $4, $5, $6)"
+            "INSERT INTO messages (room_id, username, content, message_type, audio_url, audio_duration_ms, message_id) VALUES ($1, $2, $3, $4, $5, $6, $7)"
         )
             .bind(room_id)
             .bind(username)
@@ -198,9 +200,10 @@ pub(super) async fn handle_audio_command(
             .bind("AudioMessage")
             .bind(&audio_url)
             .bind(duration_ms as i32)
+            .bind(&audio_msg.id)
             .execute(&state.pool).await
             .ok();
-        state.send_to_room(current_room, &audio_json).await;
+        state.send_to_room(&current_room, &audio_json).await;
     } else {
         send_notice(writer, "Usage: /audio <url> <duration_ms>").await;
     }

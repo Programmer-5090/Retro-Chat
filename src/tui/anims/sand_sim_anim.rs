@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 const STEP_INTERVAL: Duration = Duration::from_millis(55);
-const SPAWN_GLYPH: &str = "\u{2591}"; // ░
+const SPAWN_GLYPH: &str = "\u{2591}";
 
 pub struct SandSim {
     pub color: Color,

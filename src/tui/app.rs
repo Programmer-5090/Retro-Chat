@@ -1,4 +1,8 @@
-use std::{ collections::{ HashMap, HashSet, VecDeque }, sync::{ Arc, atomic::AtomicBool }, time::{ Duration, Instant } };
+use std::{
+    collections::{ HashMap, HashSet, VecDeque },
+    sync::{ Arc, atomic::AtomicBool },
+    time::{ Duration, Instant },
+};
 
 use crossterm::{
     event::{
@@ -32,7 +36,6 @@ use super::format::make_system_msg;
 use super::anims::{ SpinningCube, MatrixRain, Starfield, SpinningTorus, SandSim };
 use super::types::{ AnimationKind, FocusPane, Theme, THEMES };
 
-
 struct CleanGuard;
 
 impl Drop for CleanGuard {
@@ -45,6 +48,7 @@ impl Drop for CleanGuard {
 
 pub struct AudioState {
     pub is_recording: bool,
+    pub push_to_talk_active: bool,
     pub record_start: Option<Instant>,
     pub record_stream: Option<cpal::Stream>,
     pub record_samples: Option<Arc<std::sync::Mutex<Vec<f32>>>>,
@@ -119,6 +123,7 @@ pub struct App {
     pub(crate) dirty: bool,
     pub online_users: HashSet<String>,
     pub(crate) message_times: VecDeque<Instant>,
+    pub(crate) system_expiry: HashMap<String, Instant>,
 
     pub input: InputState,
     pub audio: AudioState,
@@ -155,6 +160,7 @@ impl App {
 
         let audio = AudioState {
             is_recording: false,
+            push_to_talk_active: false,
             record_start: None,
             record_stream: None,
             record_samples: None,
@@ -221,6 +227,7 @@ impl App {
             dirty: false,
             online_users: HashSet::new(),
             message_times: VecDeque::new(),
+            system_expiry: HashMap::new(),
             input,
             audio,
             images,
@@ -283,6 +290,7 @@ impl App {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut last_sparkline_tick = Instant::now();
         let mut last_anim_tick = Instant::now();
+        let mut last_expiry_cleanup = Instant::now();
         let anim_interval = Duration::from_millis(16);
         loop {
             let now = Instant::now();
@@ -305,6 +313,11 @@ impl App {
                 self.ui.sparkline_data.pop_front();
                 last_sparkline_tick = now;
                 self.dirty = true;
+            }
+
+            if now - last_expiry_cleanup >= Duration::from_millis(200) {
+                super::server_msg::cleanup_sys_messages(self);
+                last_expiry_cleanup = now;
             }
 
             // Typing indicator debounce
@@ -348,6 +361,9 @@ impl App {
                     Event::Key(key) => {
                         if key.kind == KeyEventKind::Press {
                             super::input::handle_key(self, key).await;
+                            self.dirty = true;
+                        } else if key.kind == KeyEventKind::Release {
+                            super::input::handle_key_release(self, key).await;
                             self.dirty = true;
                         }
                     }
@@ -416,8 +432,12 @@ impl App {
                             self.dirty = true;
                         }
                     }
-                    Err(mpsc::error::TryRecvError::Empty) => break,
-                    Err(mpsc::error::TryRecvError::Disconnected) => break,
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        break;
+                    }
+                    Err(mpsc::error::TryRecvError::Disconnected) => {
+                        break;
+                    }
                 }
             }
             if self.should_quit {
