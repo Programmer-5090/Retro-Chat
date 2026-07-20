@@ -9,7 +9,7 @@ ByteChat is a **terminal-based (TUI) chat application**. It features a client-se
 ## Features
 
 - **TUI Client** — Four-pane layout (sidebar, messages, input, and anim area) with mouse support, focus cycling, and pulsing focus indicators
-- **Multi-Room Chat** — Create, join, and leave rooms; room membership persisted in PostgreSQL with `/join` or `/leave`
+- **Multi-Room Chat** — Create, join, and leave rooms  with `/join` or `/leave`; room membership persisted in PostgreSQL
 - **Private Messages** — Direct message any user with `/dm`
 - **Image Sharing** — Upload and display images inline with `/image <path>`
 - **Audio Notes** — Record microphone input, upload audio, and play back with live FFT spectrum visualization by holding the `grave accent-key`, when focused on message area to record or typing `/audio <path>` to send an audio file
