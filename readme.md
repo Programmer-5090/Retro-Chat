@@ -4,7 +4,7 @@ ByteChat is a **terminal-based (TUI) chat application**. It features a client-se
 
 ## Demo
 
-<video src="readme\Demo.mp4" width="320" height="240" controls></video>
+<video src="https://github.com/user-attachments/assets/7e61899f-8cca-40e1-b12e-dd099c883d96" width="320" height="240" controls></video>
 
 ## Features
 
