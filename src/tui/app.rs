@@ -256,7 +256,7 @@ impl App {
         let _guard = CleanGuard;
 
         // Everyday I am reminded why i hate windows (* ￣︿￣)
-        self.images.picker = Picker::halfblocks(); // <---- I couldn't for my life get this working, so i had to use this
+        self.images.picker = Picker::from_query_stdio().unwrap(); // <---- It works now (≧∇≦)ﾉ
         self.update_image_cell_size();
 
         tokio::spawn(async move {
@@ -465,7 +465,7 @@ impl App {
     }
 
     fn update_image_cell_size(&mut self) {
-        let (fw, fh) = self.images.picker.font_size();
+        let (fw, fh) = (self.images.picker.font_size().width, self.images.picker.font_size().height);
         let thumb_px = 128u32;
         self.images.image_cell_height = (thumb_px / (fh as u32)).max(1) as u16;
         self.images.image_cell_width = (thumb_px / (fw as u32)).max(1) as u16;

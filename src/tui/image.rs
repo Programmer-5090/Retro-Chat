@@ -33,7 +33,7 @@ pub(crate) fn spawn_image_fetch(app: &App, msg_id: String, thumb_url: String) {
             ::spawn_blocking(move || {
                 let img = image::load_from_memory(&bytes).ok()?;
                 let rect = ratatui::layout::Rect::new(0, 0, cell_w, cell_h);
-                picker.new_protocol(img, rect, Resize::Fit(None)).ok()
+                picker.new_protocol(img, rect.into(), Resize::Fit(None)).ok()
             }).await
             .ok()
             .flatten();

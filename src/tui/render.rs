@@ -371,7 +371,8 @@ pub(crate) fn render_messages(app: &mut App, f: &mut Frame, area: Rect) {
                     let img_area = Rect {
                         y: msg_area.y + (1).min(msg_area.height),
                         height: msg_area.height.saturating_sub(1),
-                        ..msg_area
+                        width: app.images.image_cell_width.min(msg_area.width), // 
+                        x: msg_area.x,                                          // <-- This was the image rendering fix
                     };
 
                     if let Some(protocol) = app.images.image_cache.get(&msg.id) {
