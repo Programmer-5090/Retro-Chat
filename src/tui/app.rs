@@ -199,7 +199,7 @@ impl App {
             sand: SandSim::new(),
             anim_kind: AnimationKind::Cube,
             start_time: Instant::now(),
-            sparkline_data: VecDeque::new(),
+            sparkline_data: VecDeque::from(vec![0u16; 30]),
         };
 
         let read = ReadState {

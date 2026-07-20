@@ -77,6 +77,11 @@ pub async fn run_login_ui(
                     KeyCode::Backspace => {
                         password.pop();
                     }
+                    KeyCode::Esc => {
+                        disable_raw_mode()?;
+                        execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
+                        std::process::exit(0);
+                    }
                     KeyCode::Enter => {
                         if password.is_empty() {
                             continue;

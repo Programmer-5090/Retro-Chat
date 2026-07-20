@@ -15,7 +15,10 @@ pub(crate) fn ingest_msg(app: &mut App, mut msg: ChatMessage, read: bool) {
         app.message_times.pop_front();
     }
 
-    let was_unread = !read && !msg.room.is_empty() && msg.room != app.current_room;
+    let was_unread = !read
+        && !msg.room.is_empty()
+        && msg.room != app.current_room
+        && msg.message_type != MessageType::SystemNotification;
     if was_unread {
         app.read.unread_rooms.insert(msg.room.clone());
     }
